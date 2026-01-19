@@ -1,6 +1,6 @@
 import pytest
 
-from services.api.daily_close import validate_symbol, get_yfinance_tickers_to_try
+from services.api.daily_close import validate_symbol, get_yfinance_tickers_to_try, normalize_ticker
 
 
 class TestValidateSymbol:
@@ -77,3 +77,59 @@ class TestGetYfinanceTickersToTry:
     def test_other_currency_used_as_is(self):
         """Other currency symbols are used as-is."""
         assert get_yfinance_tickers_to_try("VOO", "EUR") == ["VOO"]
+
+
+class TestNormalizeTicker:
+    """Tests for normalize_ticker() function."""
+
+    def test_twd_symbol_with_letters_preserves_suffix(self):
+        """
+        TWD symbols with letters (e.g., 00983A) should:
+        1) Keep leading zeros
+        2) Keep trailing letters
+        3) Append .TW suffix
+        """
+        assert normalize_ticker("00983A", "TWD") == "00983A.TW"
+        assert normalize_ticker("00984A", "TWD") == "00984A.TW"
+        assert normalize_ticker("00988A", "TWD") == "00988A.TW"
+        assert normalize_ticker("00687B", "TWD") == "00687B.TW"
+        assert normalize_ticker("00953B", "TWD") == "00953B.TW"
+
+    def test_twd_symbol_with_leading_zeros_preserved(self):
+        """TWD symbols with leading zeros should preserve them."""
+        assert normalize_ticker("0050", "TWD") == "0050.TW"
+        assert normalize_ticker("0052", "TWD") == "0052.TW"
+        assert normalize_ticker("00713", "TWD") == "00713.TW"
+        assert normalize_ticker("00965", "TWD") == "00965.TW"
+
+    def test_twd_symbol_numeric_no_leading_zero(self):
+        """TWD numeric symbols without leading zeros get .TW suffix."""
+        assert normalize_ticker("2330", "TWD") == "2330.TW"
+        assert normalize_ticker("1519", "TWD") == "1519.TW"
+        assert normalize_ticker("4979", "TWD") == "4979.TW"
+
+    def test_twd_symbol_with_existing_suffix_unchanged(self):
+        """TWD symbols already having a dot (suffix) are returned as-is."""
+        assert normalize_ticker("2330.TW", "TWD") == "2330.TW"
+        assert normalize_ticker("4979.TWO", "TWD") == "4979.TWO"
+
+    def test_usd_symbol_unchanged(self):
+        """USD symbols are returned as-is (no suffix added)."""
+        assert normalize_ticker("AAPL", "USD") == "AAPL"
+        assert normalize_ticker("GOOGL", "USD") == "GOOGL"
+        assert normalize_ticker("MSFT", "USD") == "MSFT"
+
+    def test_symbol_treated_as_string(self):
+        """
+        Symbol is always treated as string, preserving leading zeros
+        even if passed as other types (defensive handling).
+        """
+        # String input
+        assert normalize_ticker("0050", "TWD") == "0050.TW"
+        # Ensure str() conversion happens (symbol should be string but be defensive)
+        assert normalize_ticker("  00983A  ", "TWD") == "00983A.TW"
+
+    def test_whitespace_stripped(self):
+        """Whitespace around symbol is stripped."""
+        assert normalize_ticker("  2330  ", "TWD") == "2330.TW"
+        assert normalize_ticker(" AAPL ", "USD") == "AAPL"

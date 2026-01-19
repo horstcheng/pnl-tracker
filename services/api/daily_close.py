@@ -94,15 +94,44 @@ def get_usd_twd_rate() -> Decimal:
         raise
 
 
+def normalize_ticker(symbol: str, asset_ccy: str) -> str:
+    """
+    Normalize a symbol to its primary yfinance ticker.
+
+    Args:
+        symbol: The trading symbol as a string (must preserve leading zeros and letters).
+        asset_ccy: The asset currency (e.g., "TWD", "USD").
+
+    Returns:
+        The normalized yfinance ticker string.
+
+    Examples:
+        normalize_ticker("00983A", "TWD") -> "00983A.TW"
+        normalize_ticker("2330", "TWD") -> "2330.TW"
+        normalize_ticker("AAPL", "USD") -> "AAPL"
+    """
+    # Ensure symbol is treated as string, preserving leading zeros and letters
+    symbol = str(symbol).strip()
+
+    # For TWD symbols without an existing suffix, append .TW
+    if asset_ccy == "TWD" and "." not in symbol:
+        return f"{symbol}.TW"
+    return symbol
+
+
 def get_yfinance_tickers_to_try(symbol: str, asset_ccy: str) -> List[str]:
     """
     Return list of yfinance ticker symbols to try for a given symbol.
 
-    For TWD symbols without a dot, try .TW then .TWO (OTC market).
+    Uses normalize_ticker() for the primary ticker, then adds .TWO fallback for TWD.
     """
+    symbol = str(symbol).strip()
+    primary = normalize_ticker(symbol, asset_ccy)
+
+    # For TWD symbols without existing suffix, also try OTC market (.TWO) as fallback
     if asset_ccy == "TWD" and "." not in symbol:
-        return [f"{symbol}.TW", f"{symbol}.TWO"]
-    return [symbol]
+        return [primary, f"{symbol}.TWO"]
+    return [primary]
 
 
 def try_fetch_price(yf_symbol: str) -> Tuple[bool, Optional[Decimal]]:
@@ -128,6 +157,7 @@ def try_fetch_price(yf_symbol: str) -> Tuple[bool, Optional[Decimal]]:
 
 def try_fetch_price_with_prev(
     yf_symbol: str,
+    original_symbol: Optional[str] = None,
 ) -> Tuple[bool, Optional[Decimal], Optional[Decimal]]:
     """
     Try to fetch current and previous trading day close prices.
@@ -135,9 +165,14 @@ def try_fetch_price_with_prev(
     Fetches 7 days of history to ensure we get at least two valid close prices
     even during holidays or market closures.
 
+    Args:
+        yf_symbol: The yfinance ticker symbol to fetch.
+        original_symbol: The original symbol (for debug logging).
+
     Returns (success, today_close, prev_close) tuple.
     prev_close may be None even if success is True (insufficient history).
     """
+    display_symbol = original_symbol or yf_symbol
     try:
         ticker = yf.Ticker(yf_symbol)
         hist = ticker.history(period="7d")
@@ -150,6 +185,16 @@ def try_fetch_price_with_prev(
         prev_close = None
         if len(close_series) >= 2:
             prev_close = Decimal(str(close_series.iloc[-2]))
+        else:
+            # Debug logging for missing prev_close
+            last_3_dates = list(close_series.index[-3:]) if len(close_series) >= 1 else []
+            last_3_closes = [float(close_series.iloc[i]) for i in range(-min(3, len(close_series)), 0)] if len(close_series) >= 1 else []
+            logger.warning(
+                f"Missing prev_close debug: symbol={display_symbol}, ticker={yf_symbol}, "
+                f"history_len={len(close_series)}, "
+                f"last_dates={[str(d.date()) for d in last_3_dates]}, "
+                f"last_closes={last_3_closes}"
+            )
         return True, today_close, prev_close
     except Exception as e:
         logger.debug(f"Failed to fetch {yf_symbol}: {e}")
@@ -179,7 +224,7 @@ def get_close_prices(
         found = False
 
         for yf_symbol in tickers_to_try:
-            success, today_price, prev_price = try_fetch_price_with_prev(yf_symbol)
+            success, today_price, prev_price = try_fetch_price_with_prev(yf_symbol, original_symbol=symbol)
             if success and today_price is not None:
                 prices[symbol] = today_price
                 if prev_price is not None:
