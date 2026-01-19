@@ -269,7 +269,7 @@ def try_fetch_price_with_prev(
 
 def get_close_prices(
     symbols_with_ccy: List[Tuple[str, str]]
-) -> Tuple[Dict[str, Decimal], Dict[str, Decimal], Dict[str, List[Tuple[str, str]]], List[str], Dict[str, dict]]:
+) -> Tuple[Dict[str, Decimal], Dict[str, Decimal], Dict[str, List[Tuple[str, str]]], List[str], Dict[str, dict], int, int]:
     """
     Fetch close prices for all symbols using yfinance.
 
@@ -279,12 +279,16 @@ def get_close_prices(
         - lookup_attempts: dict of symbol -> list of (ticker, result) for missing symbols
         - missing_prev_close: list of symbols missing previous close data
         - missing_prev_debug: dict of symbol -> debug info for missing prev_close symbols
+        - history_count: number of symbols using history-based prev_close
+        - fallback_count: number of symbols using fast_info.previousClose fallback
     """
     prices: Dict[str, Decimal] = {}
     prev_prices: Dict[str, Decimal] = {}
     lookup_attempts: Dict[str, List[Tuple[str, str]]] = {}
     missing_prev_close: List[str] = []
     missing_prev_debug: Dict[str, dict] = {}
+    history_count = 0
+    fallback_count = 0
 
     for symbol, asset_ccy in symbols_with_ccy:
         tickers_to_try = get_yfinance_tickers_to_try(symbol, asset_ccy)
@@ -297,6 +301,11 @@ def get_close_prices(
                 prices[symbol] = today_price
                 if prev_price is not None:
                     prev_prices[symbol] = prev_price
+                    # Track data source for prev_close
+                    if debug_info and debug_info.get("fallback_used"):
+                        fallback_count += 1
+                    else:
+                        history_count += 1
                 else:
                     missing_prev_close.append(symbol)
                     if debug_info:
@@ -314,7 +323,7 @@ def get_close_prices(
             logger.warning(f"No price data for {symbol} after trying: {tickers_to_try}")
             lookup_attempts[symbol] = attempts
 
-    return prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug
+    return prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug, history_count, fallback_count
 
 
 def build_transactions(trades: List[dict]) -> Dict[Tuple[str, str, str], List[Transaction]]:
@@ -497,6 +506,8 @@ def format_slack_message(
     top_day_symbols: List[Tuple[str, Decimal]],
     missing_prev_close: List[str],
     missing_prev_debug: Optional[Dict[str, dict]] = None,
+    day_pnl_history_count: int = 0,
+    day_pnl_fallback_count: int = 0,
 ) -> str:
     """Format the Slack message."""
     top5 = top_symbols[:5]
@@ -536,6 +547,10 @@ def format_slack_message(
     top5_day = top_day_symbols[:5]
     for i, (symbol, pnl) in enumerate(top5_day, 1):
         lines.append(f"  {i}. {symbol}: {pnl:+,.0f} TWD")
+
+    # Day P&L data source summary
+    lines.append("")
+    lines.append(f"Day P&L data sources: history={day_pnl_history_count} symbols, previousClose fallback={day_pnl_fallback_count} symbols")
 
     # Day P&L warnings
     if missing_prev_close:
@@ -610,7 +625,7 @@ def main() -> None:
         (validate_symbol(t["symbol"], f"row {i+2}"), str(t["asset_ccy"]).strip().upper())
         for i, t in enumerate(trades)
     })
-    prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug = get_close_prices(symbols_with_ccy)
+    prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug, history_count, fallback_count = get_close_prices(symbols_with_ccy)
     logger.info(f"Fetched prices for {len(prices)} symbols")
 
     all_symbols = {sym for sym, _ in symbols_with_ccy}
@@ -634,6 +649,8 @@ def main() -> None:
         top_day_symbols=top_day_symbols,
         missing_prev_close=missing_prev_close,
         missing_prev_debug=missing_prev_debug,
+        day_pnl_history_count=history_count,
+        day_pnl_fallback_count=fallback_count,
     )
 
     logger.info("Posting to Slack")
