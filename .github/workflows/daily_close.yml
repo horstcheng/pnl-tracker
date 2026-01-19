@@ -17,6 +17,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python services/api/daily_close.py
         env:
+          PYTHONPATH: ${{ github.workspace }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
