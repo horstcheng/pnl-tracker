@@ -94,6 +94,36 @@ def get_usd_twd_rate() -> Decimal:
         raise
 
 
+def normalize_twd_ticker(symbol: str) -> str:
+    """
+    Normalize a TWD symbol to its yfinance ticker.
+
+    Always treats input as string, preserving leading zeros and letters.
+    Ensures ".TW" suffix for TWD assets.
+
+    Args:
+        symbol: The trading symbol (e.g., "00983A", "2330", "0050").
+
+    Returns:
+        The normalized yfinance ticker with .TW suffix.
+
+    Examples:
+        normalize_twd_ticker("00983A") -> "00983A.TW"
+        normalize_twd_ticker("2330") -> "2330.TW"
+        normalize_twd_ticker("0050") -> "0050.TW"
+        normalize_twd_ticker("2330.TW") -> "2330.TW"  # already has suffix
+    """
+    # Always treat input as string, preserving leading zeros and letters
+    symbol = str(symbol).strip()
+
+    # If already has a suffix, return as-is
+    if "." in symbol:
+        return symbol
+
+    # Append .TW suffix for TWD symbols
+    return f"{symbol}.TW"
+
+
 def normalize_ticker(symbol: str, asset_ccy: str) -> str:
     """
     Normalize a symbol to its primary yfinance ticker.
@@ -113,9 +143,10 @@ def normalize_ticker(symbol: str, asset_ccy: str) -> str:
     # Ensure symbol is treated as string, preserving leading zeros and letters
     symbol = str(symbol).strip()
 
-    # For TWD symbols without an existing suffix, append .TW
-    if asset_ccy == "TWD" and "." not in symbol:
-        return f"{symbol}.TW"
+    # For TWD symbols, use normalize_twd_ticker for consistent handling
+    if asset_ccy == "TWD":
+        return normalize_twd_ticker(symbol)
+
     return symbol
 
 

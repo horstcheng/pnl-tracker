@@ -1,6 +1,6 @@
 import pytest
 
-from services.api.daily_close import validate_symbol, get_yfinance_tickers_to_try, normalize_ticker
+from services.api.daily_close import validate_symbol, get_yfinance_tickers_to_try, normalize_ticker, normalize_twd_ticker
 
 
 class TestValidateSymbol:
@@ -133,3 +133,50 @@ class TestNormalizeTicker:
         """Whitespace around symbol is stripped."""
         assert normalize_ticker("  2330  ", "TWD") == "2330.TW"
         assert normalize_ticker(" AAPL ", "USD") == "AAPL"
+
+
+class TestNormalizeTwdTicker:
+    """Tests for normalize_twd_ticker() function."""
+
+    def test_symbol_with_letters_preserves_format(self):
+        """
+        TWD symbols with letters (e.g., 00983A) should:
+        1) Keep leading zeros
+        2) Keep trailing letters
+        3) Append .TW suffix
+        """
+        assert normalize_twd_ticker("00983A") == "00983A.TW"
+        assert normalize_twd_ticker("00984A") == "00984A.TW"
+        assert normalize_twd_ticker("00988A") == "00988A.TW"
+        assert normalize_twd_ticker("00687B") == "00687B.TW"
+        assert normalize_twd_ticker("00953B") == "00953B.TW"
+
+    def test_leading_zeros_preserved(self):
+        """Leading zeros are preserved in normalized ticker."""
+        assert normalize_twd_ticker("0050") == "0050.TW"
+        assert normalize_twd_ticker("0052") == "0052.TW"
+        assert normalize_twd_ticker("00713") == "00713.TW"
+        assert normalize_twd_ticker("00965") == "00965.TW"
+        assert normalize_twd_ticker("009805") == "009805.TW"
+
+    def test_numeric_symbol_gets_suffix(self):
+        """Numeric symbols without leading zeros get .TW suffix."""
+        assert normalize_twd_ticker("2330") == "2330.TW"
+        assert normalize_twd_ticker("1519") == "1519.TW"
+        assert normalize_twd_ticker("4979") == "4979.TW"
+
+    def test_existing_suffix_unchanged(self):
+        """Symbols already having a suffix are returned as-is."""
+        assert normalize_twd_ticker("2330.TW") == "2330.TW"
+        assert normalize_twd_ticker("4979.TWO") == "4979.TWO"
+        assert normalize_twd_ticker("00983A.TW") == "00983A.TW"
+
+    def test_always_treated_as_string(self):
+        """Input is always treated as string."""
+        assert normalize_twd_ticker("0050") == "0050.TW"
+        assert normalize_twd_ticker("  00983A  ") == "00983A.TW"
+
+    def test_whitespace_stripped(self):
+        """Whitespace around symbol is stripped."""
+        assert normalize_twd_ticker("  2330  ") == "2330.TW"
+        assert normalize_twd_ticker("\t00983A\n") == "00983A.TW"
