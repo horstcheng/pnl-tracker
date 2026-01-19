@@ -132,12 +132,15 @@ def try_fetch_price_with_prev(
     """
     Try to fetch current and previous trading day close prices.
 
+    Fetches 7 days of history to ensure we get at least two valid close prices
+    even during holidays or market closures.
+
     Returns (success, today_close, prev_close) tuple.
     prev_close may be None even if success is True (insufficient history).
     """
     try:
         ticker = yf.Ticker(yf_symbol)
-        hist = ticker.history(period="5d")
+        hist = ticker.history(period="7d")
         if hist.empty:
             return False, None, None
         close_series = hist["Close"].dropna()
@@ -420,6 +423,7 @@ def format_slack_message(
     if missing_prev_close:
         lines.append("")
         lines.append(f"Day P&L warnings: missing previous close for {', '.join(sorted(missing_prev_close))}")
+        lines.append("Day P&L note: missing prev_close symbols are treated as 0 (excluded from today's move).")
 
     lines.append("")
     missing_str = ", ".join(missing_symbols) if missing_symbols else "None"

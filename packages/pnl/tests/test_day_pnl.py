@@ -191,3 +191,129 @@ def test_day_pnl_does_not_affect_total_pnl():
     assert res.avg_cost == Decimal("601")
     assert res.realized_pnl == Decimal("0")
     assert res.unrealized_pnl == Decimal("4900")
+
+
+def test_day_pnl_lenient_mode_with_prev_close():
+    """
+    Test lenient mode: when prev_close exists, day_pnl is computed normally.
+
+    This verifies the happy path where both today_close and prev_close are available.
+    """
+    symbol_positions = {
+        "MSFT": (Decimal("50"), "USD"),
+        "2317": (Decimal("200"), "TWD"),
+    }
+    prices = {
+        "MSFT": Decimal("400"),
+        "2317": Decimal("120"),
+    }
+    prev_prices = {
+        "MSFT": Decimal("380"),
+        "2317": Decimal("115"),
+    }
+    usd_twd = Decimal("32")
+
+    total_day_pnl, sorted_pnl = compute_day_pnl(symbol_positions, prices, prev_prices, usd_twd)
+
+    # MSFT: (400 - 380) * 50 = 1000 USD -> 32000 TWD
+    # 2317: (120 - 115) * 200 = 1000 TWD
+    # Total: 32000 + 1000 = 33000 TWD
+    assert total_day_pnl == Decimal("33000")
+    assert len(sorted_pnl) == 2
+    # Both symbols should be in the result
+    symbols_in_result = {s[0] for s in sorted_pnl}
+    assert "MSFT" in symbols_in_result
+    assert "2317" in symbols_in_result
+
+
+def test_day_pnl_lenient_mode_missing_prev_close_returns_zero():
+    """
+    Test lenient mode: when only one valid close exists (prev_close missing),
+    day_pnl for that symbol is 0 and symbol should be in missing_prev_close list.
+
+    This test verifies:
+    1) compute_day_pnl returns day_pnl=0 for symbols without prev_close
+    2) The symbol is correctly excluded from the result list
+    3) Other symbols with prev_close are still computed correctly
+    """
+    symbol_positions = {
+        "AAPL": (Decimal("10"), "USD"),
+        "NEWIPO": (Decimal("100"), "USD"),  # Only one close value exists
+    }
+    prices = {
+        "AAPL": Decimal("180"),
+        "NEWIPO": Decimal("50"),
+    }
+    prev_prices = {
+        "AAPL": Decimal("175"),
+        # NEWIPO missing - simulates only one valid close value
+    }
+    usd_twd = Decimal("32")
+
+    total_day_pnl, sorted_pnl = compute_day_pnl(symbol_positions, prices, prev_prices, usd_twd)
+
+    # Only AAPL is counted: (180 - 175) * 10 = 50 USD -> 1600 TWD
+    # NEWIPO has day_pnl=0 (excluded from today's move)
+    assert total_day_pnl == Decimal("1600")
+    assert len(sorted_pnl) == 1
+    assert sorted_pnl[0][0] == "AAPL"
+
+    # Verify NEWIPO is NOT in the result (its day_pnl is effectively 0)
+    symbols_in_result = {s[0] for s in sorted_pnl}
+    assert "NEWIPO" not in symbols_in_result
+
+
+def test_format_slack_message_includes_missing_prev_close_note():
+    """
+    Test that format_slack_message includes the lenient mode note when
+    missing_prev_close list is non-empty.
+    """
+    from services.api.daily_close import format_slack_message
+
+    message = format_slack_message(
+        today="2026-01-19",
+        usd_twd=Decimal("32.5"),
+        total_pnl=Decimal("100000"),
+        user_pnl={"user1": Decimal("100000")},
+        top_symbols=[("AAPL", Decimal("50000")), ("TSLA", Decimal("30000"))],
+        symbols_count=10,
+        missing_symbols=[],
+        lookup_attempts={},
+        total_day_pnl=Decimal("5000"),
+        top_day_symbols=[("AAPL", Decimal("3000"))],
+        missing_prev_close=["NEWIPO", "IPO2"],
+    )
+
+    # Verify the warning line exists
+    assert "Day P&L warnings: missing previous close for" in message
+    assert "IPO2" in message
+    assert "NEWIPO" in message
+
+    # Verify the note about lenient mode is included
+    assert "Day P&L note: missing prev_close symbols are treated as 0 (excluded from today's move)." in message
+
+
+def test_format_slack_message_no_note_when_all_prev_close_present():
+    """
+    Test that format_slack_message does NOT include the lenient mode note
+    when all symbols have prev_close (missing_prev_close is empty).
+    """
+    from services.api.daily_close import format_slack_message
+
+    message = format_slack_message(
+        today="2026-01-19",
+        usd_twd=Decimal("32.5"),
+        total_pnl=Decimal("100000"),
+        user_pnl={"user1": Decimal("100000")},
+        top_symbols=[("AAPL", Decimal("50000"))],
+        symbols_count=5,
+        missing_symbols=[],
+        lookup_attempts={},
+        total_day_pnl=Decimal("5000"),
+        top_day_symbols=[("AAPL", Decimal("3000"))],
+        missing_prev_close=[],  # Empty - all symbols have prev_close
+    )
+
+    # Verify the warning and note are NOT present
+    assert "Day P&L warnings:" not in message
+    assert "Day P&L note:" not in message
