@@ -349,6 +349,7 @@ def build_transactions(trades: List[dict]) -> Dict[Tuple[str, str, str], List[Tr
     return grouped
 
 
+# Sprint A frozen: Total P&L logic. Do not modify without CIO approval.
 def compute_all_pnl(
     grouped_txs: Dict[Tuple[str, str, str], List[Transaction]],
     prices: Dict[str, Decimal],
@@ -420,6 +421,7 @@ def compute_all_pnl(
     return dict(user_pnl), total_pnl, sorted_symbols, symbol_positions
 
 
+# Sprint A frozen: Day P&L logic (history + previousClose fallback).
 def compute_day_pnl(
     symbol_positions: Dict[str, Tuple[Decimal, str]],
     prices: Dict[str, Decimal],
