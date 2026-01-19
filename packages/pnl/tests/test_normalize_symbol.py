@@ -1,48 +1,56 @@
 import pytest
 
-from services.api.daily_close import normalize_symbol, clear_symbol_normalizations
+from services.api.daily_close import validate_symbol
 
 
-class TestNormalizeSymbol:
-    def setup_method(self):
-        clear_symbol_normalizations()
+class TestValidateSymbol:
+    def test_valid_symbol_with_leading_zeros(self):
+        """Symbols with leading zeros are preserved as-is."""
+        assert validate_symbol("0050", "row 2") == "0050"
+        assert validate_symbol("0052", "row 3") == "0052"
+        assert validate_symbol("00687B", "row 4") == "00687B"
+        assert validate_symbol("00953B", "row 5") == "00953B"
+        assert validate_symbol("00713", "row 6") == "00713"
+        assert validate_symbol("00965", "row 7") == "00965"
+        assert validate_symbol("009805", "row 8") == "009805"
+        assert validate_symbol("00972", "row 9") == "00972"
+        assert validate_symbol("009812", "row 10") == "009812"
 
-    def test_numeric_1_digit_pads_to_4(self):
-        assert normalize_symbol(5) == "0005"
-        assert normalize_symbol("5") == "0005"
+    def test_valid_symbol_alphanumeric(self):
+        """Alphanumeric symbols are preserved."""
+        assert validate_symbol("00983A", "row 2") == "00983A"
+        assert validate_symbol("00984A", "row 3") == "00984A"
+        assert validate_symbol("00988A", "row 4") == "00988A"
 
-    def test_numeric_2_digits_pads_to_4(self):
-        assert normalize_symbol(50) == "0050"
-        assert normalize_symbol("50") == "0050"
+    def test_valid_symbol_numeric_no_leading_zero(self):
+        """Numeric symbols without leading zeros are preserved."""
+        assert validate_symbol("1519", "row 2") == "1519"
+        assert validate_symbol("4979", "row 3") == "4979"
+        assert validate_symbol("6442", "row 4") == "6442"
+        assert validate_symbol("6789", "row 5") == "6789"
 
-    def test_numeric_3_digits_pads_to_4(self):
-        assert normalize_symbol(713) == "0713"
-        assert normalize_symbol("713") == "0713"
-
-    def test_numeric_4_digits_stays_4(self):
-        assert normalize_symbol(9805) == "9805"
-        assert normalize_symbol("9805") == "9805"
-        assert normalize_symbol(2330) == "2330"
-
-    def test_numeric_5_digits_stays_5(self):
-        assert normalize_symbol(12345) == "12345"
-        assert normalize_symbol("00965") == "00965"
-
-    def test_numeric_6_digits_stays_6(self):
-        assert normalize_symbol(123456) == "123456"
-        assert normalize_symbol("009805") == "009805"
-
-    def test_alphanumeric_uppercased_no_padding(self):
-        assert normalize_symbol("00687B") == "00687B"
-        assert normalize_symbol("00687b") == "00687B"
-        assert normalize_symbol("AAPL") == "AAPL"
-        assert normalize_symbol("aapl") == "AAPL"
+    def test_valid_symbol_us_stock(self):
+        """US stock symbols are preserved."""
+        assert validate_symbol("AAPL", "row 2") == "AAPL"
+        assert validate_symbol("GOOGL", "row 3") == "GOOGL"
+        assert validate_symbol("MSFT", "row 4") == "MSFT"
 
     def test_strips_whitespace(self):
-        assert normalize_symbol("  50  ") == "0050"
-        assert normalize_symbol(" AAPL ") == "AAPL"
+        """Whitespace is stripped from symbols."""
+        assert validate_symbol("  0050  ", "row 2") == "0050"
+        assert validate_symbol(" AAPL ", "row 3") == "AAPL"
+        assert validate_symbol("\t2330\n", "row 4") == "2330"
 
-    def test_string_numeric_with_leading_zeros_preserved(self):
-        # When passed as string with leading zeros, they're preserved
-        assert normalize_symbol("0050") == "0050"
-        assert normalize_symbol("00713") == "00713"
+    def test_empty_symbol_raises_error(self):
+        """Empty symbol raises ValueError."""
+        with pytest.raises(ValueError, match="Symbol cannot be empty"):
+            validate_symbol("", "row 2")
+        with pytest.raises(ValueError, match="Symbol cannot be empty"):
+            validate_symbol("   ", "row 3")
+
+    def test_non_string_raises_error(self):
+        """Non-string symbol raises ValueError."""
+        with pytest.raises(ValueError, match="Symbol must be a string"):
+            validate_symbol(123, "row 2")
+        with pytest.raises(ValueError, match="Symbol must be a string"):
+            validate_symbol(None, "row 3")

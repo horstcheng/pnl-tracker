@@ -25,44 +25,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global dict to track symbol normalizations for audit
-_symbol_normalizations: Dict[str, str] = {}
-
-
-def normalize_symbol(raw) -> str:
-    """
-    Normalize a symbol from Google Sheets.
-
-    - Convert to string and strip spaces
-    - If purely numeric and length 1-4: pad to 4 digits (e.g., 50 -> 0050)
-    - If purely numeric and length 5-6: keep as-is
-    - If contains letters: uppercase without padding
-    """
-    s = str(raw).strip()
-
-    if s.isdigit():
-        if len(s) <= 4:
-            normalized = s.zfill(4)
-        else:
-            normalized = s
-    else:
-        normalized = s.upper()
-
-    if normalized != str(raw):
-        _symbol_normalizations[str(raw)] = normalized
-
-    return normalized
-
-
-def get_symbol_normalizations() -> Dict[str, str]:
-    """Return the symbol normalizations that occurred."""
-    return _symbol_normalizations.copy()
-
-
-def clear_symbol_normalizations() -> None:
-    """Clear the symbol normalizations dict."""
-    _symbol_normalizations.clear()
-
 
 def get_google_sheet_client() -> gspread.Client:
     """Create a gspread client using service account JSON from env."""
@@ -76,11 +38,43 @@ def get_google_sheet_client() -> gspread.Client:
 
 
 def read_trades_from_sheet(client: gspread.Client, sheet_id: str) -> List[dict]:
-    """Read trades from the 'trades' tab of the Google Sheet."""
+    """
+    Read trades from the 'trades' tab of the Google Sheet.
+
+    Uses get_all_values() to preserve formatted strings (e.g., '0050' stays '0050').
+    """
     spreadsheet = client.open_by_key(sheet_id)
     worksheet = spreadsheet.worksheet("trades")
-    records = worksheet.get_all_records()
+
+    # Get all values as strings (preserves leading zeros)
+    all_values = worksheet.get_all_values()
+
+    if not all_values:
+        return []
+
+    # First row is headers
+    headers = [h.strip() for h in all_values[0]]
+
+    # Build list of dicts from remaining rows
+    records = []
+    for row_idx, row in enumerate(all_values[1:], start=2):
+        record = {}
+        for col_idx, header in enumerate(headers):
+            value = row[col_idx] if col_idx < len(row) else ""
+            record[header] = value
+        records.append(record)
+
     return records
+
+
+def validate_symbol(symbol: str, row_context: str) -> str:
+    """Validate and return symbol, raising error if invalid."""
+    if not isinstance(symbol, str):
+        raise ValueError(f"Symbol must be a string, got {type(symbol).__name__}: {symbol} ({row_context})")
+    symbol = symbol.strip()
+    if not symbol:
+        raise ValueError(f"Symbol cannot be empty ({row_context})")
+    return symbol
 
 
 def get_usd_twd_rate() -> Decimal:
@@ -132,15 +126,17 @@ def build_transactions(trades: List[dict]) -> Dict[Tuple[str, str, str], List[Tr
     """Group trades by (user_id, symbol, asset_ccy) and build Transaction objects."""
     grouped: Dict[Tuple[str, str, str], List[Transaction]] = defaultdict(list)
 
-    for trade in trades:
+    for idx, trade in enumerate(trades, start=2):
+        row_context = f"row {idx}"
+
         user_id = str(trade["user_id"]).strip()
-        symbol = normalize_symbol(trade["symbol"])
+        symbol = validate_symbol(trade["symbol"], row_context)
         asset_ccy = str(trade["asset_ccy"]).strip().upper()
-        side = str(trade["side"]).upper()
+        side = str(trade["side"]).strip().upper()
         quantity = Decimal(str(trade["quantity"]))
         price = Decimal(str(trade["price"]))
         fee = Decimal(str(trade["fee"]))
-        trade_date = str(trade["trade_date"])
+        trade_date = str(trade["trade_date"]).strip()
 
         tx_type = TxType.BUY if side == "BUY" else TxType.SELL
 
@@ -228,7 +224,6 @@ def format_slack_message(
     top_symbols: List[Tuple[str, Decimal]],
     symbols_count: int,
     missing_symbols: List[str],
-    normalizations: Dict[str, str],
 ) -> str:
     """Format the Slack message."""
     top5 = top_symbols[:5]
@@ -263,12 +258,6 @@ def format_slack_message(
     missing_str = ", ".join(missing_symbols) if missing_symbols else "None"
     lines.append(f"Missing prices: {missing_str}")
 
-    if normalizations:
-        norm_str = ", ".join(f"{k}->{v}" for k, v in sorted(normalizations.items()))
-    else:
-        norm_str = "None"
-    lines.append(f"Normalized tickers: {norm_str}")
-
     return "\n".join(lines)
 
 
@@ -289,7 +278,6 @@ def post_to_slack(text: str) -> None:
 def main() -> None:
     """Main entry point."""
     logger.info("Starting daily close process")
-    clear_symbol_normalizations()
 
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
 
@@ -306,8 +294,8 @@ def main() -> None:
     usd_twd = get_usd_twd_rate()
 
     symbols_with_ccy = list({
-        (normalize_symbol(t["symbol"]), str(t["asset_ccy"]).strip().upper())
-        for t in trades
+        (validate_symbol(t["symbol"], f"row {i+2}"), str(t["asset_ccy"]).strip().upper())
+        for i, t in enumerate(trades)
     })
     prices = get_close_prices(symbols_with_ccy)
     logger.info(f"Fetched prices for {len(prices)} symbols")
@@ -319,14 +307,11 @@ def main() -> None:
 
     user_pnl, total_pnl, top_symbols = compute_all_pnl(grouped_txs, prices, usd_twd)
 
-    normalizations = get_symbol_normalizations()
-
     today = date.today().isoformat()
     message = format_slack_message(
         today, usd_twd, total_pnl, user_pnl, top_symbols,
         symbols_count=len(prices),
         missing_symbols=missing_symbols,
-        normalizations=normalizations,
     )
 
     logger.info("Posting to Slack")
