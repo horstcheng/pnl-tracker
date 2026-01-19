@@ -1,0 +1,19 @@
+name: Daily Close
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 21:05 台北時間 = 13:05 UTC
+    - cron: "5 13 * * *"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python services/api/daily_close.py
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
