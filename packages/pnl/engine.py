@@ -32,4 +32,34 @@ def compute_position_weighted_avg_cost(
     transactions: List[Transaction],
     close_price: Decimal,
 ) -> PositionResult:
-    raise NotImplementedError("尚未實作")
+    quantity = Decimal("0")
+    total_cost = Decimal("0")
+    realized_pnl = Decimal("0")
+
+    sorted_txs = sorted(transactions, key=lambda tx: tx.trade_date)
+
+    for tx in sorted_txs:
+        if tx.tx_type == TxType.BUY:
+            total_cost += tx.price * tx.quantity + tx.fee
+            quantity += tx.quantity
+        elif tx.tx_type == TxType.SELL:
+            if tx.quantity > quantity:
+                raise ValueError("Sell quantity exceeds current holding")
+            avg_cost = total_cost / quantity
+            realized_pnl += (tx.price - avg_cost) * tx.quantity - tx.fee
+            total_cost -= avg_cost * tx.quantity
+            quantity -= tx.quantity
+
+    if quantity == Decimal("0"):
+        avg_cost = Decimal("0")
+        unrealized_pnl = Decimal("0")
+    else:
+        avg_cost = total_cost / quantity
+        unrealized_pnl = (close_price - avg_cost) * quantity
+
+    return PositionResult(
+        quantity=quantity,
+        avg_cost=avg_cost,
+        realized_pnl=realized_pnl,
+        unrealized_pnl=unrealized_pnl,
+    )
