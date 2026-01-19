@@ -605,57 +605,61 @@ def post_to_slack(text: str) -> None:
 
 def main() -> None:
     """Main entry point."""
-    logger.info("Starting daily close process")
+    try:
+        logger.info("Starting daily close process")
 
-    sheet_id = os.environ["GOOGLE_SHEET_ID"]
+        sheet_id = os.environ["GOOGLE_SHEET_ID"]
 
-    client = get_google_sheet_client()
-    logger.info("Connected to Google Sheets")
+        client = get_google_sheet_client()
+        logger.info("Connected to Google Sheets")
 
-    trades = read_trades_from_sheet(client, sheet_id)
-    logger.info(f"Read {len(trades)} trades from sheet")
+        trades = read_trades_from_sheet(client, sheet_id)
+        logger.info(f"Read {len(trades)} trades from sheet")
 
-    if not trades:
-        logger.info("No trades found, exiting")
-        return
+        if not trades:
+            logger.info("No trades found, exiting")
+            return
 
-    usd_twd = get_usd_twd_rate()
+        usd_twd = get_usd_twd_rate()
 
-    symbols_with_ccy = list({
-        (validate_symbol(t["symbol"], f"row {i+2}"), str(t["asset_ccy"]).strip().upper())
-        for i, t in enumerate(trades)
-    })
-    prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug, history_count, fallback_count = get_close_prices(symbols_with_ccy)
-    logger.info(f"Fetched prices for {len(prices)} symbols")
+        symbols_with_ccy = list({
+            (validate_symbol(t["symbol"], f"row {i+2}"), str(t["asset_ccy"]).strip().upper())
+            for i, t in enumerate(trades)
+        })
+        prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug, history_count, fallback_count = get_close_prices(symbols_with_ccy)
+        logger.info(f"Fetched prices for {len(prices)} symbols")
 
-    all_symbols = {sym for sym, _ in symbols_with_ccy}
-    missing_symbols = sorted(all_symbols - set(prices.keys()))
+        all_symbols = {sym for sym, _ in symbols_with_ccy}
+        missing_symbols = sorted(all_symbols - set(prices.keys()))
 
-    grouped_txs = build_transactions(trades)
+        grouped_txs = build_transactions(trades)
 
-    user_pnl, total_pnl, top_symbols, symbol_positions = compute_all_pnl(grouped_txs, prices, usd_twd)
+        user_pnl, total_pnl, top_symbols, symbol_positions = compute_all_pnl(grouped_txs, prices, usd_twd)
 
-    # Compute Day P&L
-    total_day_pnl, top_day_symbols = compute_day_pnl(symbol_positions, prices, prev_prices, usd_twd)
-    logger.info(f"Day P&L calculated: {total_day_pnl:.2f} TWD")
+        # Compute Day P&L
+        total_day_pnl, top_day_symbols = compute_day_pnl(symbol_positions, prices, prev_prices, usd_twd)
+        logger.info(f"Day P&L calculated: {total_day_pnl:.2f} TWD")
 
-    today = date.today().isoformat()
-    message = format_slack_message(
-        today, usd_twd, total_pnl, user_pnl, top_symbols,
-        symbols_count=len(prices),
-        missing_symbols=missing_symbols,
-        lookup_attempts=lookup_attempts,
-        total_day_pnl=total_day_pnl,
-        top_day_symbols=top_day_symbols,
-        missing_prev_close=missing_prev_close,
-        missing_prev_debug=missing_prev_debug,
-        day_pnl_history_count=history_count,
-        day_pnl_fallback_count=fallback_count,
-    )
+        today = date.today().isoformat()
+        message = format_slack_message(
+            today, usd_twd, total_pnl, user_pnl, top_symbols,
+            symbols_count=len(prices),
+            missing_symbols=missing_symbols,
+            lookup_attempts=lookup_attempts,
+            total_day_pnl=total_day_pnl,
+            top_day_symbols=top_day_symbols,
+            missing_prev_close=missing_prev_close,
+            missing_prev_debug=missing_prev_debug,
+            day_pnl_history_count=history_count,
+            day_pnl_fallback_count=fallback_count,
+        )
 
-    logger.info("Posting to Slack")
-    post_to_slack(message)
-    logger.info("Daily close completed successfully")
+        logger.info("Posting to Slack")
+        post_to_slack(message)
+        logger.info("Daily close completed successfully")
+    except Exception:
+        logger.exception("An unhandled exception occurred during the daily close process.")
+        raise
 
 
 if __name__ == "__main__":
