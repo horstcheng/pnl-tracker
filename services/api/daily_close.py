@@ -188,13 +188,19 @@ def format_slack_message(
     total_pnl: Decimal,
     user_pnl: Dict[str, Decimal],
     top_symbols: List[Tuple[str, Decimal]],
+    symbols_count: int,
+    missing_symbols: List[str],
 ) -> str:
     """Format the Slack message."""
+    top5 = top_symbols[:5]
+    top5_subtotal = sum(pnl for _, pnl in top5)
+    others_subtotal = total_pnl - top5_subtotal
+
     lines = [
         f"*Daily P&L Report - {today}*",
         "",
         f"USD/TWD: {usd_twd:.2f}",
-        f"Total P&L (TWD): {total_pnl:+,.0f}",
+        f"Symbols counted: {symbols_count}",
         "",
         "*User P&L Ranking (Top 3):*",
     ]
@@ -206,8 +212,17 @@ def format_slack_message(
     lines.append("")
     lines.append("*Top 5 Symbols by P&L (absolute):*")
 
-    for i, (symbol, pnl) in enumerate(top_symbols[:5], 1):
+    for i, (symbol, pnl) in enumerate(top5, 1):
         lines.append(f"  {i}. {symbol}: {pnl:+,.0f} TWD")
+
+    lines.append("")
+    lines.append(f"Top5 subtotal: {top5_subtotal:+,.0f} TWD")
+    lines.append(f"Others subtotal: {others_subtotal:+,.0f} TWD")
+    lines.append(f"Grand total: {total_pnl:+,.0f} TWD")
+
+    lines.append("")
+    missing_str = ", ".join(missing_symbols) if missing_symbols else "None"
+    lines.append(f"Missing prices: {missing_str}")
 
     return "\n".join(lines)
 
@@ -248,12 +263,19 @@ def main() -> None:
     prices = get_close_prices(symbols_with_ccy)
     logger.info(f"Fetched prices for {len(prices)} symbols")
 
+    all_symbols = {sym for sym, _ in symbols_with_ccy}
+    missing_symbols = sorted(all_symbols - set(prices.keys()))
+
     grouped_txs = build_transactions(trades)
 
     user_pnl, total_pnl, top_symbols = compute_all_pnl(grouped_txs, prices, usd_twd)
 
     today = date.today().isoformat()
-    message = format_slack_message(today, usd_twd, total_pnl, user_pnl, top_symbols)
+    message = format_slack_message(
+        today, usd_twd, total_pnl, user_pnl, top_symbols,
+        symbols_count=len(prices),
+        missing_symbols=missing_symbols,
+    )
 
     logger.info("Posting to Slack")
     post_to_slack(message)
