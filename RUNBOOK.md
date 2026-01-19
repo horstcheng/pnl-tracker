@@ -3,6 +3,78 @@
 	•	失敗時的處置：重跑、跳過、或 fail fast
 
 
+## P&L Calculation
+
+### Total P&L
+
+**Definition:** The cumulative profit/loss for each position from acquisition to current close.
+
+**Formula:**
+```
+Total P&L = Realized P&L + Unrealized P&L
+
+Realized P&L = sum of (sell_price - avg_cost) * sell_quantity - fees (for closed positions)
+Unrealized P&L = (current_close - avg_cost) * remaining_quantity (for open positions)
+
+where avg_cost = weighted average cost including fees
+```
+
+**Data Sources:**
+- Trade history: Google Sheets (`trades` tab)
+- Current close price: yfinance (`ticker.history(period="7d")`, last valid Close)
+- Exchange rate: exchangerate-api.com (`/v4/latest/USD`)
+
+**Currency Conversion:**
+- TWD positions: P&L reported in TWD (no conversion)
+- USD positions: P&L converted to TWD using daily USD/TWD rate
+
+---
+
+### Day P&L
+
+**Definition:** The daily change in portfolio value based on price movement from previous close to today's close.
+
+**Formula:**
+```
+Day P&L = (today_close - prev_close) * current_position_quantity
+```
+
+**Data Sources (in order of priority):**
+
+1. **Primary:** yfinance daily history
+   - Fetch 7 days of history: `ticker.history(period="7d")`
+   - Use last two valid Close values as `(prev_close, today_close)`
+
+2. **Fallback:** yfinance fast_info (when history has < 2 rows)
+   - `prev_close = ticker.fast_info.get("previousClose")`
+   - `today_close` from history (last valid Close)
+
+3. **Lenient mode:** (when both primary and fallback fail)
+   - `day_pnl = 0` for that symbol
+   - Symbol added to `missing_prev_close` warnings
+   - Report includes note: "missing prev_close symbols are treated as 0"
+
+**Currency Conversion:**
+- Same as Total P&L (TWD positions in TWD, USD positions converted via USD/TWD rate)
+
+---
+
+### Known Limitations
+
+1. **yfinance history may return only one row for some TW ETFs**
+   - Observed for: 00983A.TW, 00984A.TW, 00988A.TW
+   - Root cause: yfinance data availability for certain Taiwan-listed ETFs
+   - Mitigation: fallback to `fast_info.previousClose`
+
+2. **Fallback may also fail**
+   - If `fast_info.previousClose` is unavailable, Day P&L defaults to 0
+   - Symbol appears in warnings with debug info (ticker, rows, dates, closes)
+
+3. **Market holidays and data gaps**
+   - 7-day history window accommodates most holidays
+   - If fewer than 2 trading days in window, fallback is triggered
+
+
 ====BUG 修復指令====
 CI is failing. Please fix the bug.
 
