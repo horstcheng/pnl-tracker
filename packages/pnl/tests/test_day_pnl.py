@@ -317,3 +317,110 @@ def test_format_slack_message_no_note_when_all_prev_close_present():
     # Verify the warning and note are NOT present
     assert "Day P&L warnings:" not in message
     assert "Day P&L note:" not in message
+
+
+def test_day_pnl_fallback_fast_info_provides_prev_close(monkeypatch):
+    """
+    Test fallback when history returns only 1 row but fast_info.previousClose exists.
+
+    Simulates 00983A.TW scenario where yfinance history has only 1 data point
+    but fast_info provides previousClose.
+    """
+    import pandas as pd
+    from unittest.mock import MagicMock
+    from services.api.daily_close import try_fetch_price_with_prev
+
+    # Create mock ticker with 1-row history and fast_info.previousClose
+    mock_ticker = MagicMock()
+
+    # History with only 1 row
+    mock_hist = pd.DataFrame({
+        "Close": [12.50],
+    }, index=pd.to_datetime(["2026-01-17"]))
+    mock_ticker.history.return_value = mock_hist
+
+    # fast_info with previousClose
+    mock_ticker.fast_info = {"previousClose": 12.30}
+
+    # Patch yf.Ticker to return our mock
+    def mock_yf_ticker(symbol):
+        return mock_ticker
+
+    import yfinance as yf
+    monkeypatch.setattr(yf, "Ticker", mock_yf_ticker)
+
+    success, today_close, prev_close, debug_info = try_fetch_price_with_prev("00983A.TW", "00983A")
+
+    assert success is True
+    assert today_close == Decimal("12.50")
+    assert prev_close == Decimal("12.30")  # From fallback
+    assert debug_info["fallback_used"] is True
+    assert debug_info["fallback_prev_close"] == "12.30"
+    assert debug_info["rows"] == 1
+
+
+def test_day_pnl_fallback_both_missing_stays_warning(monkeypatch):
+    """
+    Test when history returns 1 row AND fast_info.previousClose is None.
+
+    prev_close should be None, symbol stays in missing_prev_close warnings,
+    and day pnl = 0 (lenient mode).
+    """
+    import pandas as pd
+    from unittest.mock import MagicMock
+    from services.api.daily_close import try_fetch_price_with_prev
+
+    # Create mock ticker with 1-row history and no fast_info.previousClose
+    mock_ticker = MagicMock()
+
+    # History with only 1 row
+    mock_hist = pd.DataFrame({
+        "Close": [12.50],
+    }, index=pd.to_datetime(["2026-01-17"]))
+    mock_ticker.history.return_value = mock_hist
+
+    # fast_info without previousClose
+    mock_ticker.fast_info = {}
+
+    # Patch yf.Ticker to return our mock
+    def mock_yf_ticker(symbol):
+        return mock_ticker
+
+    import yfinance as yf
+    monkeypatch.setattr(yf, "Ticker", mock_yf_ticker)
+
+    success, today_close, prev_close, debug_info = try_fetch_price_with_prev("00983A.TW", "00983A")
+
+    assert success is True
+    assert today_close == Decimal("12.50")
+    assert prev_close is None  # Both history and fallback failed
+    assert debug_info["fallback_used"] is False
+    assert debug_info["fallback_prev_close"] is None
+    assert debug_info["rows"] == 1
+
+
+def test_day_pnl_with_fallback_computes_correctly():
+    """
+    Test that Day P&L is computed correctly when prev_close comes from fallback.
+
+    When prev_close is available (from fallback), the symbol should NOT be in
+    missing_prev_close and Day P&L should be calculated normally.
+    """
+    symbol_positions = {
+        "00983A": (Decimal("100"), "TWD"),
+    }
+    prices = {
+        "00983A": Decimal("12.50"),
+    }
+    prev_prices = {
+        "00983A": Decimal("12.30"),  # Came from fallback
+    }
+    usd_twd = Decimal("32")
+
+    total_day_pnl, sorted_pnl = compute_day_pnl(symbol_positions, prices, prev_prices, usd_twd)
+
+    # (12.50 - 12.30) * 100 = 20 TWD
+    assert total_day_pnl == Decimal("20")
+    assert len(sorted_pnl) == 1
+    assert sorted_pnl[0][0] == "00983A"
+    assert sorted_pnl[0][1] == Decimal("20")

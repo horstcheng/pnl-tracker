@@ -193,16 +193,16 @@ def try_fetch_price_with_prev(
     """
     Try to fetch current and previous trading day close prices.
 
-    Fetches 7 days of history to ensure we get at least two valid close prices
-    even during holidays or market closures.
+    Primary method: Fetches 7 days of history and uses last two valid Close values.
+    Fallback: When history has < 2 rows, tries fast_info["previousClose"].
 
     Args:
         yf_symbol: The yfinance ticker symbol to fetch.
         original_symbol: The original symbol (for debug logging).
 
     Returns (success, today_close, prev_close, debug_info) tuple.
-    prev_close may be None even if success is True (insufficient history).
-    debug_info contains yf_ticker, rows, dates, closes for debugging.
+    prev_close may be None even if success is True (insufficient history and no fallback).
+    debug_info contains yf_ticker, rows, dates, closes, fallback info for debugging.
     """
     display_symbol = original_symbol or yf_symbol
     try:
@@ -231,16 +231,36 @@ def try_fetch_price_with_prev(
             "rows": num_rows,
             "dates": last_3_dates,
             "closes": last_3_closes,
+            "fallback_used": False,
+            "fallback_prev_close": None,
         }
-
-        logger.info(
-            f"Day P&L debug: symbol={display_symbol}, ticker={yf_symbol}, "
-            f"history_rows={num_rows}, last_3={list(zip(last_3_dates, last_3_closes))}"
-        )
 
         prev_close = None
         if num_rows >= 2:
+            # Primary method: use history
             prev_close = Decimal(str(close_series.iloc[-2]))
+        else:
+            # Fallback: try fast_info.previousClose when history has < 2 rows
+            try:
+                fast_info = ticker.fast_info
+                fallback_prev = fast_info.get("previousClose") if fast_info else None
+                if fallback_prev is not None:
+                    prev_close = Decimal(str(fallback_prev))
+                    debug_info["fallback_used"] = True
+                    debug_info["fallback_prev_close"] = f"{float(fallback_prev):.2f}"
+                    logger.info(
+                        f"Day P&L fallback: symbol={display_symbol}, ticker={yf_symbol}, "
+                        f"fast_info.previousClose={fallback_prev}"
+                    )
+            except Exception as fallback_err:
+                logger.debug(f"Fallback fast_info failed for {yf_symbol}: {fallback_err}")
+
+        logger.info(
+            f"Day P&L debug: symbol={display_symbol}, ticker={yf_symbol}, "
+            f"history_rows={num_rows}, last_3={list(zip(last_3_dates, last_3_closes))}, "
+            f"fallback_used={debug_info['fallback_used']}"
+        )
+
         return True, today_close, prev_close, debug_info
     except Exception as e:
         logger.debug(f"Failed to fetch {yf_symbol}: {e}")
@@ -532,7 +552,10 @@ def format_slack_message(
                     rows = info.get("rows", "?")
                     closes = ", ".join(info.get("closes", []))
                     dates = ", ".join(info.get("dates", []))
-                    lines.append(f"- {sym}: yf_ticker={yf_ticker}, rows={rows}, closes={closes}, dates={dates}")
+                    fallback_used = info.get("fallback_used", False)
+                    fallback_prev = info.get("fallback_prev_close", None)
+                    fallback_str = f", fallback_used={fallback_used}, fallback_prev={fallback_prev}" if fallback_used or rows == 1 else ""
+                    lines.append(f"- {sym}: yf_ticker={yf_ticker}, rows={rows}, closes={closes}, dates={dates}{fallback_str}")
 
     lines.append("")
     missing_str = ", ".join(missing_symbols) if missing_symbols else "None"
