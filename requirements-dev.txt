@@ -1,1 +1,5 @@
 pytest==8.*
+gspread==6.*
+google-auth==2.*
+yfinance==0.*
+requests==2.*
