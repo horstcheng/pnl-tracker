@@ -213,19 +213,21 @@ def try_fetch_price_with_prev(
         if close_series.empty:
             return False, None, None
         today_close = Decimal(str(close_series.iloc[-1]))
+
+        # Debug logging for day pnl warning symbols (before deciding prev_close)
+        num_rows = len(close_series)
+        last_3_pairs = [
+            (str(close_series.index[i].date()), float(close_series.iloc[i]))
+            for i in range(-min(3, num_rows), 0)
+        ] if num_rows >= 1 else []
+        logger.info(
+            f"Day P&L debug: symbol={display_symbol}, ticker={yf_symbol}, "
+            f"history_rows={num_rows}, last_3={(last_3_pairs)}"
+        )
+
         prev_close = None
-        if len(close_series) >= 2:
+        if num_rows >= 2:
             prev_close = Decimal(str(close_series.iloc[-2]))
-        else:
-            # Debug logging for missing prev_close
-            last_3_dates = list(close_series.index[-3:]) if len(close_series) >= 1 else []
-            last_3_closes = [float(close_series.iloc[i]) for i in range(-min(3, len(close_series)), 0)] if len(close_series) >= 1 else []
-            logger.warning(
-                f"Missing prev_close debug: symbol={display_symbol}, ticker={yf_symbol}, "
-                f"history_len={len(close_series)}, "
-                f"last_dates={[str(d.date()) for d in last_3_dates]}, "
-                f"last_closes={last_3_closes}"
-            )
         return True, today_close, prev_close
     except Exception as e:
         logger.debug(f"Failed to fetch {yf_symbol}: {e}")
