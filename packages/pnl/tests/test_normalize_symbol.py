@@ -1,6 +1,6 @@
 import pytest
 
-from services.api.daily_close import validate_symbol
+from services.api.daily_close import validate_symbol, get_yfinance_tickers_to_try
 
 
 class TestValidateSymbol:
@@ -54,3 +54,26 @@ class TestValidateSymbol:
             validate_symbol(123, "row 2")
         with pytest.raises(ValueError, match="Symbol must be a string"):
             validate_symbol(None, "row 3")
+
+
+class TestGetYfinanceTickersToTry:
+    def test_twd_symbol_without_dot_tries_tw_then_two(self):
+        """TWD symbols without dot should try .TW then .TWO."""
+        assert get_yfinance_tickers_to_try("0050", "TWD") == ["0050.TW", "0050.TWO"]
+        assert get_yfinance_tickers_to_try("4979", "TWD") == ["4979.TW", "4979.TWO"]
+        assert get_yfinance_tickers_to_try("00687B", "TWD") == ["00687B.TW", "00687B.TWO"]
+
+    def test_twd_symbol_with_dot_used_as_is(self):
+        """TWD symbols with dot are used as-is (already have suffix)."""
+        assert get_yfinance_tickers_to_try("2330.TW", "TWD") == ["2330.TW"]
+        assert get_yfinance_tickers_to_try("4979.TWO", "TWD") == ["4979.TWO"]
+
+    def test_usd_symbol_used_as_is(self):
+        """USD symbols are used as-is (no suffix needed)."""
+        assert get_yfinance_tickers_to_try("AAPL", "USD") == ["AAPL"]
+        assert get_yfinance_tickers_to_try("GOOGL", "USD") == ["GOOGL"]
+        assert get_yfinance_tickers_to_try("MSFT", "USD") == ["MSFT"]
+
+    def test_other_currency_used_as_is(self):
+        """Other currency symbols are used as-is."""
+        assert get_yfinance_tickers_to_try("VOO", "EUR") == ["VOO"]

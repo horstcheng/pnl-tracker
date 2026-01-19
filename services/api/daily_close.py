@@ -5,7 +5,7 @@ import urllib.request
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import gspread
 import requests
@@ -94,32 +94,73 @@ def get_usd_twd_rate() -> Decimal:
         raise
 
 
-def get_symbol_for_yfinance(symbol: str, asset_ccy: str) -> str:
-    """Convert symbol to yfinance format based on currency."""
+def get_yfinance_tickers_to_try(symbol: str, asset_ccy: str) -> List[str]:
+    """
+    Return list of yfinance ticker symbols to try for a given symbol.
+
+    For TWD symbols without a dot, try .TW then .TWO (OTC market).
+    """
     if asset_ccy == "TWD" and "." not in symbol:
-        return f"{symbol}.TW"
-    return symbol
+        return [f"{symbol}.TW", f"{symbol}.TWO"]
+    return [symbol]
 
 
-def get_close_prices(symbols_with_ccy: List[Tuple[str, str]]) -> Dict[str, Decimal]:
-    """Fetch close prices for all symbols using yfinance."""
+def try_fetch_price(yf_symbol: str) -> Tuple[bool, Optional[Decimal]]:
+    """
+    Try to fetch close price for a single yfinance symbol.
+
+    Returns (success, price) tuple.
+    """
+    try:
+        ticker = yf.Ticker(yf_symbol)
+        hist = ticker.history(period="5d")
+        if hist.empty:
+            return False, None
+        close_series = hist["Close"].dropna()
+        if close_series.empty:
+            return False, None
+        close_price = close_series.iloc[-1]
+        return True, Decimal(str(close_price))
+    except Exception as e:
+        logger.debug(f"Failed to fetch {yf_symbol}: {e}")
+        return False, None
+
+
+def get_close_prices(
+    symbols_with_ccy: List[Tuple[str, str]]
+) -> Tuple[Dict[str, Decimal], Dict[str, List[Tuple[str, str]]]]:
+    """
+    Fetch close prices for all symbols using yfinance.
+
+    Returns:
+        - prices: dict of symbol -> Decimal price
+        - lookup_attempts: dict of symbol -> list of (ticker, result) for missing symbols
+    """
     prices: Dict[str, Decimal] = {}
+    lookup_attempts: Dict[str, List[Tuple[str, str]]] = {}
 
     for symbol, asset_ccy in symbols_with_ccy:
-        yf_symbol = get_symbol_for_yfinance(symbol, asset_ccy)
-        try:
-            ticker = yf.Ticker(yf_symbol)
-            hist = ticker.history(period="5d")
-            if hist.empty:
-                logger.warning(f"No price data for {yf_symbol}")
-                continue
-            close_price = hist["Close"].dropna().iloc[-1]
-            prices[symbol] = Decimal(str(close_price))
-            logger.info(f"Price for {symbol} ({yf_symbol}): {close_price}")
-        except Exception as e:
-            logger.warning(f"Failed to get price for {yf_symbol}: {e}")
+        tickers_to_try = get_yfinance_tickers_to_try(symbol, asset_ccy)
+        attempts: List[Tuple[str, str]] = []
+        found = False
 
-    return prices
+        for yf_symbol in tickers_to_try:
+            success, price = try_fetch_price(yf_symbol)
+            if success and price is not None:
+                prices[symbol] = price
+                logger.info(f"Price for {symbol} ({yf_symbol}): {price}")
+                attempts.append((yf_symbol, "ok"))
+                found = True
+                break
+            else:
+                attempts.append((yf_symbol, "fail"))
+                logger.debug(f"No price data for {yf_symbol}")
+
+        if not found:
+            logger.warning(f"No price data for {symbol} after trying: {tickers_to_try}")
+            lookup_attempts[symbol] = attempts
+
+    return prices, lookup_attempts
 
 
 def build_transactions(trades: List[dict]) -> Dict[Tuple[str, str, str], List[Transaction]]:
@@ -224,6 +265,7 @@ def format_slack_message(
     top_symbols: List[Tuple[str, Decimal]],
     symbols_count: int,
     missing_symbols: List[str],
+    lookup_attempts: Dict[str, List[Tuple[str, str]]],
 ) -> str:
     """Format the Slack message."""
     top5 = top_symbols[:5]
@@ -257,6 +299,14 @@ def format_slack_message(
     lines.append("")
     missing_str = ", ".join(missing_symbols) if missing_symbols else "None"
     lines.append(f"Missing prices: {missing_str}")
+
+    if lookup_attempts:
+        attempts_parts = []
+        for sym in sorted(lookup_attempts.keys()):
+            attempts = lookup_attempts[sym]
+            attempt_str = ", ".join(f"{t}={r}" for t, r in attempts)
+            attempts_parts.append(f"{sym}: {attempt_str}")
+        lines.append(f"Price lookup attempts (missing only): {'; '.join(attempts_parts)}")
 
     return "\n".join(lines)
 
@@ -297,7 +347,7 @@ def main() -> None:
         (validate_symbol(t["symbol"], f"row {i+2}"), str(t["asset_ccy"]).strip().upper())
         for i, t in enumerate(trades)
     })
-    prices = get_close_prices(symbols_with_ccy)
+    prices, lookup_attempts = get_close_prices(symbols_with_ccy)
     logger.info(f"Fetched prices for {len(prices)} symbols")
 
     all_symbols = {sym for sym, _ in symbols_with_ccy}
@@ -312,6 +362,7 @@ def main() -> None:
         today, usd_twd, total_pnl, user_pnl, top_symbols,
         symbols_count=len(prices),
         missing_symbols=missing_symbols,
+        lookup_attempts=lookup_attempts,
     )
 
     logger.info("Posting to Slack")
