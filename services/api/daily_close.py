@@ -430,6 +430,88 @@ def compute_all_pnl(
     return dict(user_pnl), total_pnl, sorted_symbols, symbol_positions
 
 
+# Sprint C: Risk Views (Concentration Risk & Currency Exposure)
+def compute_risk_views(
+    symbol_positions: Dict[str, Tuple[Decimal, str]],
+    prices: Dict[str, Decimal],
+    usd_twd: Decimal,
+) -> Tuple[
+    Decimal,  # total_portfolio_value_twd
+    List[Tuple[str, Decimal, Decimal]],  # concentration: (symbol, pct, value_twd) sorted desc by pct
+    List[Tuple[str, Decimal, Decimal]],  # currency_exposure: (currency, pct, value_twd) sorted desc by pct
+]:
+    """
+    Compute risk views: concentration risk and currency exposure.
+
+    Uses already computed prices (today_close), symbol_positions (quantity, asset_ccy),
+    and usd_twd. Does NOT fetch new prices or FX rates.
+
+    market_value_twd(symbol) = quantity * today_close * fx_to_twd
+    concentration_pct(symbol) = market_value_twd(symbol) / total_portfolio_value_twd
+    currency_exposure_pct(ccy) = sum(market_value_twd for ccy) / total_portfolio_value_twd
+
+    Args:
+        symbol_positions: dict of symbol -> (quantity, asset_ccy)
+        prices: dict of symbol -> today's close price
+        usd_twd: USD/TWD exchange rate
+
+    Returns:
+        - total_portfolio_value_twd: sum of all market values in TWD
+        - concentration: list of (symbol, concentration_pct, market_value_twd) sorted by pct desc
+        - currency_exposure: list of (currency, exposure_pct, exposure_value_twd) sorted by pct desc
+    """
+    # Compute market_value_twd for each symbol
+    symbol_market_values: Dict[str, Decimal] = {}
+    currency_values: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+
+    for symbol, (quantity, asset_ccy) in symbol_positions.items():
+        if symbol not in prices:
+            # Skip symbols without price data
+            continue
+        if quantity == Decimal("0"):
+            # No position, no market value
+            continue
+
+        today_close = prices[symbol]
+        market_value_native = quantity * today_close
+
+        # Convert to TWD
+        if asset_ccy == "TWD":
+            fx_to_twd = Decimal("1")
+        elif asset_ccy == "USD":
+            fx_to_twd = usd_twd
+        else:
+            # Unknown currency, treat as TWD (consistent with compute_all_pnl)
+            fx_to_twd = Decimal("1")
+
+        market_value_twd = market_value_native * fx_to_twd
+        symbol_market_values[symbol] = market_value_twd
+        currency_values[asset_ccy] += market_value_twd
+
+    # Total portfolio value
+    total_portfolio_value_twd = sum(symbol_market_values.values())
+
+    # Concentration risk (by symbol)
+    concentration: List[Tuple[str, Decimal, Decimal]] = []
+    if total_portfolio_value_twd > Decimal("0"):
+        for symbol, value_twd in symbol_market_values.items():
+            pct = (value_twd / total_portfolio_value_twd) * Decimal("100")
+            concentration.append((symbol, pct, value_twd))
+    # Sort by pct descending
+    concentration.sort(key=lambda x: x[1], reverse=True)
+
+    # Currency exposure
+    currency_exposure: List[Tuple[str, Decimal, Decimal]] = []
+    if total_portfolio_value_twd > Decimal("0"):
+        for ccy, value_twd in currency_values.items():
+            pct = (value_twd / total_portfolio_value_twd) * Decimal("100")
+            currency_exposure.append((ccy, pct, value_twd))
+    # Sort by pct descending
+    currency_exposure.sort(key=lambda x: x[1], reverse=True)
+
+    return total_portfolio_value_twd, concentration, currency_exposure
+
+
 # Sprint A frozen: Day P&L logic (history + previousClose fallback).
 def compute_day_pnl(
     symbol_positions: Dict[str, Tuple[Decimal, str]],
@@ -508,6 +590,8 @@ def format_slack_message(
     missing_prev_debug: Optional[Dict[str, dict]] = None,
     day_pnl_history_count: int = 0,
     day_pnl_fallback_count: int = 0,
+    concentration: Optional[List[Tuple[str, Decimal, Decimal]]] = None,
+    currency_exposure: Optional[List[Tuple[str, Decimal, Decimal]]] = None,
 ) -> str:
     """Format the Slack message."""
     top5 = top_symbols[:5]
@@ -586,6 +670,32 @@ def format_slack_message(
             attempts_parts.append(f"{sym}: {attempt_str}")
         lines.append(f"Price lookup attempts (missing only): {'; '.join(attempts_parts)}")
 
+    # Sprint C: Risk Views section (append-only)
+    if concentration is not None and currency_exposure is not None:
+        lines.append("")
+        lines.append("*Risk Views:*")
+
+        # Concentration Risk (by market value)
+        lines.append("*Concentration Risk (by market value):*")
+        top5_concentration = concentration[:5]
+        for i, (symbol, pct, value_twd) in enumerate(top5_concentration, 1):
+            lines.append(f"  {i}. {symbol}: {pct:.1f}% ({value_twd:,.0f})")
+
+        # Concentration risk alerts
+        if concentration:
+            top1_pct = concentration[0][1] if len(concentration) >= 1 else Decimal("0")
+            top3_pct = sum(c[1] for c in concentration[:3])
+            if top1_pct > Decimal("25"):
+                lines.append("⚠️ Top-1 concentration risk")
+            if top3_pct > Decimal("60"):
+                lines.append("⚠️ Top-3 concentration risk")
+
+        # Currency Exposure
+        lines.append("")
+        lines.append("*Currency Exposure:*")
+        for ccy, pct, value_twd in currency_exposure:
+            lines.append(f"  - {ccy}: {pct:.1f}% ({value_twd:,.0f})")
+
     return "\n".join(lines)
 
 
@@ -640,6 +750,12 @@ def main() -> None:
         total_day_pnl, top_day_symbols = compute_day_pnl(symbol_positions, prices, prev_prices, usd_twd)
         logger.info(f"Day P&L calculated: {total_day_pnl:.2f} TWD")
 
+        # Compute Risk Views (Sprint C)
+        total_portfolio_value, concentration, currency_exposure = compute_risk_views(
+            symbol_positions, prices, usd_twd
+        )
+        logger.info(f"Risk views calculated: portfolio={total_portfolio_value:.0f} TWD, {len(concentration)} symbols, {len(currency_exposure)} currencies")
+
         today = date.today().isoformat()
         message = format_slack_message(
             today, usd_twd, total_pnl, user_pnl, top_symbols,
@@ -652,6 +768,8 @@ def main() -> None:
             missing_prev_debug=missing_prev_debug,
             day_pnl_history_count=history_count,
             day_pnl_fallback_count=fallback_count,
+            concentration=concentration,
+            currency_exposure=currency_exposure,
         )
 
         logger.info("Posting to Slack")
