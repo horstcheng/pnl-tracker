@@ -189,7 +189,7 @@ def try_fetch_price(yf_symbol: str) -> Tuple[bool, Optional[Decimal]]:
 def try_fetch_price_with_prev(
     yf_symbol: str,
     original_symbol: Optional[str] = None,
-) -> Tuple[bool, Optional[Decimal], Optional[Decimal]]:
+) -> Tuple[bool, Optional[Decimal], Optional[Decimal], Optional[dict]]:
     """
     Try to fetch current and previous trading day close prices.
 
@@ -200,43 +200,56 @@ def try_fetch_price_with_prev(
         yf_symbol: The yfinance ticker symbol to fetch.
         original_symbol: The original symbol (for debug logging).
 
-    Returns (success, today_close, prev_close) tuple.
+    Returns (success, today_close, prev_close, debug_info) tuple.
     prev_close may be None even if success is True (insufficient history).
+    debug_info contains yf_ticker, rows, dates, closes for debugging.
     """
     display_symbol = original_symbol or yf_symbol
     try:
         ticker = yf.Ticker(yf_symbol)
         hist = ticker.history(period="7d")
         if hist.empty:
-            return False, None, None
+            return False, None, None, None
         close_series = hist["Close"].dropna()
         if close_series.empty:
-            return False, None, None
+            return False, None, None, None
         today_close = Decimal(str(close_series.iloc[-1]))
 
-        # Debug logging for day pnl warning symbols (before deciding prev_close)
+        # Capture debug info for day pnl (before deciding prev_close)
         num_rows = len(close_series)
-        last_3_pairs = [
-            (str(close_series.index[i].date()), float(close_series.iloc[i]))
+        last_3_dates = [
+            str(close_series.index[i].date())
             for i in range(-min(3, num_rows), 0)
         ] if num_rows >= 1 else []
+        last_3_closes = [
+            f"{float(close_series.iloc[i]):.2f}"
+            for i in range(-min(3, num_rows), 0)
+        ] if num_rows >= 1 else []
+
+        debug_info = {
+            "yf_ticker": yf_symbol,
+            "rows": num_rows,
+            "dates": last_3_dates,
+            "closes": last_3_closes,
+        }
+
         logger.info(
             f"Day P&L debug: symbol={display_symbol}, ticker={yf_symbol}, "
-            f"history_rows={num_rows}, last_3={(last_3_pairs)}"
+            f"history_rows={num_rows}, last_3={list(zip(last_3_dates, last_3_closes))}"
         )
 
         prev_close = None
         if num_rows >= 2:
             prev_close = Decimal(str(close_series.iloc[-2]))
-        return True, today_close, prev_close
+        return True, today_close, prev_close, debug_info
     except Exception as e:
         logger.debug(f"Failed to fetch {yf_symbol}: {e}")
-        return False, None, None
+        return False, None, None, None
 
 
 def get_close_prices(
     symbols_with_ccy: List[Tuple[str, str]]
-) -> Tuple[Dict[str, Decimal], Dict[str, Decimal], Dict[str, List[Tuple[str, str]]], List[str]]:
+) -> Tuple[Dict[str, Decimal], Dict[str, Decimal], Dict[str, List[Tuple[str, str]]], List[str], Dict[str, dict]]:
     """
     Fetch close prices for all symbols using yfinance.
 
@@ -245,11 +258,13 @@ def get_close_prices(
         - prev_prices: dict of symbol -> Decimal price (previous trading day close)
         - lookup_attempts: dict of symbol -> list of (ticker, result) for missing symbols
         - missing_prev_close: list of symbols missing previous close data
+        - missing_prev_debug: dict of symbol -> debug info for missing prev_close symbols
     """
     prices: Dict[str, Decimal] = {}
     prev_prices: Dict[str, Decimal] = {}
     lookup_attempts: Dict[str, List[Tuple[str, str]]] = {}
     missing_prev_close: List[str] = []
+    missing_prev_debug: Dict[str, dict] = {}
 
     for symbol, asset_ccy in symbols_with_ccy:
         tickers_to_try = get_yfinance_tickers_to_try(symbol, asset_ccy)
@@ -257,13 +272,15 @@ def get_close_prices(
         found = False
 
         for yf_symbol in tickers_to_try:
-            success, today_price, prev_price = try_fetch_price_with_prev(yf_symbol, original_symbol=symbol)
+            success, today_price, prev_price, debug_info = try_fetch_price_with_prev(yf_symbol, original_symbol=symbol)
             if success and today_price is not None:
                 prices[symbol] = today_price
                 if prev_price is not None:
                     prev_prices[symbol] = prev_price
                 else:
                     missing_prev_close.append(symbol)
+                    if debug_info:
+                        missing_prev_debug[symbol] = debug_info
                     logger.warning(f"No previous close for {symbol} ({yf_symbol})")
                 logger.info(f"Price for {symbol} ({yf_symbol}): today={today_price}, prev={prev_price}")
                 attempts.append((yf_symbol, "ok"))
@@ -277,7 +294,7 @@ def get_close_prices(
             logger.warning(f"No price data for {symbol} after trying: {tickers_to_try}")
             lookup_attempts[symbol] = attempts
 
-    return prices, prev_prices, lookup_attempts, missing_prev_close
+    return prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug
 
 
 def build_transactions(trades: List[dict]) -> Dict[Tuple[str, str, str], List[Transaction]]:
@@ -457,6 +474,7 @@ def format_slack_message(
     total_day_pnl: Decimal,
     top_day_symbols: List[Tuple[str, Decimal]],
     missing_prev_close: List[str],
+    missing_prev_debug: Optional[Dict[str, dict]] = None,
 ) -> str:
     """Format the Slack message."""
     top5 = top_symbols[:5]
@@ -502,6 +520,19 @@ def format_slack_message(
         lines.append("")
         lines.append(f"Day P&L warnings: missing previous close for {', '.join(sorted(missing_prev_close))}")
         lines.append("Day P&L note: missing prev_close symbols are treated as 0 (excluded from today's move).")
+
+        # Day P&L debug section for missing prev_close symbols
+        if missing_prev_debug:
+            lines.append("")
+            lines.append("Day P&L debug:")
+            for sym in sorted(missing_prev_close):
+                if sym in missing_prev_debug:
+                    info = missing_prev_debug[sym]
+                    yf_ticker = info.get("yf_ticker", "?")
+                    rows = info.get("rows", "?")
+                    closes = ", ".join(info.get("closes", []))
+                    dates = ", ".join(info.get("dates", []))
+                    lines.append(f"- {sym}: yf_ticker={yf_ticker}, rows={rows}, closes={closes}, dates={dates}")
 
     lines.append("")
     missing_str = ", ".join(missing_symbols) if missing_symbols else "None"
@@ -554,7 +585,7 @@ def main() -> None:
         (validate_symbol(t["symbol"], f"row {i+2}"), str(t["asset_ccy"]).strip().upper())
         for i, t in enumerate(trades)
     })
-    prices, prev_prices, lookup_attempts, missing_prev_close = get_close_prices(symbols_with_ccy)
+    prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug = get_close_prices(symbols_with_ccy)
     logger.info(f"Fetched prices for {len(prices)} symbols")
 
     all_symbols = {sym for sym, _ in symbols_with_ccy}
@@ -577,6 +608,7 @@ def main() -> None:
         total_day_pnl=total_day_pnl,
         top_day_symbols=top_day_symbols,
         missing_prev_close=missing_prev_close,
+        missing_prev_debug=missing_prev_debug,
     )
 
     logger.info("Posting to Slack")
