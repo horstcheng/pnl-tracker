@@ -244,7 +244,7 @@ def main() -> None:
 
     usd_twd = get_usd_twd_rate()
 
-    symbols_with_ccy = list({(t["symbol"], t["asset_ccy"]) for t in trades})
+    symbols_with_ccy = list({(str(t["symbol"]), str(t["asset_ccy"])) for t in trades})
     prices = get_close_prices(symbols_with_ccy)
     logger.info(f"Fetched prices for {len(prices)} symbols")
 
