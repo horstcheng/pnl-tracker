@@ -126,18 +126,49 @@ def try_fetch_price(yf_symbol: str) -> Tuple[bool, Optional[Decimal]]:
         return False, None
 
 
+def try_fetch_price_with_prev(
+    yf_symbol: str,
+) -> Tuple[bool, Optional[Decimal], Optional[Decimal]]:
+    """
+    Try to fetch current and previous trading day close prices.
+
+    Returns (success, today_close, prev_close) tuple.
+    prev_close may be None even if success is True (insufficient history).
+    """
+    try:
+        ticker = yf.Ticker(yf_symbol)
+        hist = ticker.history(period="5d")
+        if hist.empty:
+            return False, None, None
+        close_series = hist["Close"].dropna()
+        if close_series.empty:
+            return False, None, None
+        today_close = Decimal(str(close_series.iloc[-1]))
+        prev_close = None
+        if len(close_series) >= 2:
+            prev_close = Decimal(str(close_series.iloc[-2]))
+        return True, today_close, prev_close
+    except Exception as e:
+        logger.debug(f"Failed to fetch {yf_symbol}: {e}")
+        return False, None, None
+
+
 def get_close_prices(
     symbols_with_ccy: List[Tuple[str, str]]
-) -> Tuple[Dict[str, Decimal], Dict[str, List[Tuple[str, str]]]]:
+) -> Tuple[Dict[str, Decimal], Dict[str, Decimal], Dict[str, List[Tuple[str, str]]], List[str]]:
     """
     Fetch close prices for all symbols using yfinance.
 
     Returns:
-        - prices: dict of symbol -> Decimal price
+        - prices: dict of symbol -> Decimal price (today's close)
+        - prev_prices: dict of symbol -> Decimal price (previous trading day close)
         - lookup_attempts: dict of symbol -> list of (ticker, result) for missing symbols
+        - missing_prev_close: list of symbols missing previous close data
     """
     prices: Dict[str, Decimal] = {}
+    prev_prices: Dict[str, Decimal] = {}
     lookup_attempts: Dict[str, List[Tuple[str, str]]] = {}
+    missing_prev_close: List[str] = []
 
     for symbol, asset_ccy in symbols_with_ccy:
         tickers_to_try = get_yfinance_tickers_to_try(symbol, asset_ccy)
@@ -145,10 +176,15 @@ def get_close_prices(
         found = False
 
         for yf_symbol in tickers_to_try:
-            success, price = try_fetch_price(yf_symbol)
-            if success and price is not None:
-                prices[symbol] = price
-                logger.info(f"Price for {symbol} ({yf_symbol}): {price}")
+            success, today_price, prev_price = try_fetch_price_with_prev(yf_symbol)
+            if success and today_price is not None:
+                prices[symbol] = today_price
+                if prev_price is not None:
+                    prev_prices[symbol] = prev_price
+                else:
+                    missing_prev_close.append(symbol)
+                    logger.warning(f"No previous close for {symbol} ({yf_symbol})")
+                logger.info(f"Price for {symbol} ({yf_symbol}): today={today_price}, prev={prev_price}")
                 attempts.append((yf_symbol, "ok"))
                 found = True
                 break
@@ -160,7 +196,7 @@ def get_close_prices(
             logger.warning(f"No price data for {symbol} after trying: {tickers_to_try}")
             lookup_attempts[symbol] = attempts
 
-    return prices, lookup_attempts
+    return prices, prev_prices, lookup_attempts, missing_prev_close
 
 
 def build_transactions(trades: List[dict]) -> Dict[Tuple[str, str, str], List[Transaction]]:
@@ -199,7 +235,7 @@ def compute_all_pnl(
     grouped_txs: Dict[Tuple[str, str, str], List[Transaction]],
     prices: Dict[str, Decimal],
     usd_twd: Decimal,
-) -> Tuple[Dict[str, Decimal], Decimal, List[Tuple[str, Decimal]]]:
+) -> Tuple[Dict[str, Decimal], Decimal, List[Tuple[str, Decimal]], Dict[str, Tuple[Decimal, str]]]:
     """
     Compute P&L for all positions.
 
@@ -207,9 +243,11 @@ def compute_all_pnl(
         - user_pnl: dict of user_id -> total P&L in TWD
         - total_pnl: overall total P&L in TWD
         - symbol_pnl: list of (symbol, pnl_twd) sorted by absolute value
+        - symbol_positions: dict of symbol -> (quantity, asset_ccy) for Day P&L calculation
     """
     user_pnl: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     symbol_pnl: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    symbol_positions: Dict[str, Tuple[Decimal, str]] = {}
     total_pnl = Decimal("0")
 
     for (user_id, symbol, asset_ccy), transactions in grouped_txs.items():
@@ -242,10 +280,17 @@ def compute_all_pnl(
         symbol_pnl[symbol] += pnl_twd
         total_pnl += pnl_twd
 
+        # Aggregate position quantity per symbol for Day P&L
+        if symbol in symbol_positions:
+            existing_qty, existing_ccy = symbol_positions[symbol]
+            symbol_positions[symbol] = (existing_qty + result.quantity, existing_ccy)
+        else:
+            symbol_positions[symbol] = (result.quantity, asset_ccy)
+
         logger.info(
             f"{user_id}/{symbol}/{asset_ccy}: "
             f"realized={result.realized_pnl}, unrealized={result.unrealized_pnl}, "
-            f"pnl_twd={pnl_twd:.2f}"
+            f"pnl_twd={pnl_twd:.2f}, qty={result.quantity}"
         )
 
     sorted_symbols = sorted(
@@ -254,7 +299,69 @@ def compute_all_pnl(
         reverse=True,
     )
 
-    return dict(user_pnl), total_pnl, sorted_symbols
+    return dict(user_pnl), total_pnl, sorted_symbols, symbol_positions
+
+
+def compute_day_pnl(
+    symbol_positions: Dict[str, Tuple[Decimal, str]],
+    prices: Dict[str, Decimal],
+    prev_prices: Dict[str, Decimal],
+    usd_twd: Decimal,
+) -> Tuple[Decimal, List[Tuple[str, Decimal]]]:
+    """
+    Compute Day P&L for all symbols.
+
+    Day P&L = (today_close - prev_close) * current_position_quantity
+
+    Args:
+        symbol_positions: dict of symbol -> (quantity, asset_ccy)
+        prices: dict of symbol -> today's close price
+        prev_prices: dict of symbol -> previous trading day close price
+        usd_twd: USD/TWD exchange rate
+
+    Returns:
+        - total_day_pnl: total Day P&L in TWD
+        - symbol_day_pnl: list of (symbol, day_pnl_twd) sorted by absolute value
+    """
+    symbol_day_pnl: Dict[str, Decimal] = {}
+    total_day_pnl = Decimal("0")
+
+    for symbol, (quantity, asset_ccy) in symbol_positions.items():
+        if symbol not in prices or symbol not in prev_prices:
+            # Skip symbols without both prices (Day P&L = 0 for these)
+            logger.info(f"Day P&L for {symbol}: skipped (missing price data)")
+            continue
+
+        if quantity == Decimal("0"):
+            # No position, no Day P&L
+            continue
+
+        today_close = prices[symbol]
+        prev_close = prev_prices[symbol]
+        day_pnl_native = (today_close - prev_close) * quantity
+
+        if asset_ccy == "TWD":
+            day_pnl_twd = day_pnl_native
+        elif asset_ccy == "USD":
+            day_pnl_twd = day_pnl_native * usd_twd
+        else:
+            day_pnl_twd = day_pnl_native
+
+        symbol_day_pnl[symbol] = day_pnl_twd
+        total_day_pnl += day_pnl_twd
+
+        logger.info(
+            f"Day P&L for {symbol}: ({today_close} - {prev_close}) * {quantity} = "
+            f"{day_pnl_native} {asset_ccy} = {day_pnl_twd:.2f} TWD"
+        )
+
+    sorted_day_pnl = sorted(
+        symbol_day_pnl.items(),
+        key=lambda x: abs(x[1]),
+        reverse=True,
+    )
+
+    return total_day_pnl, sorted_day_pnl
 
 
 def format_slack_message(
@@ -266,6 +373,9 @@ def format_slack_message(
     symbols_count: int,
     missing_symbols: List[str],
     lookup_attempts: Dict[str, List[Tuple[str, str]]],
+    total_day_pnl: Decimal,
+    top_day_symbols: List[Tuple[str, Decimal]],
+    missing_prev_close: List[str],
 ) -> str:
     """Format the Slack message."""
     top5 = top_symbols[:5]
@@ -286,7 +396,7 @@ def format_slack_message(
         lines.append(f"  {i}. {user_id}: {pnl:+,.0f} TWD")
 
     lines.append("")
-    lines.append("*Top 5 Symbols by P&L (absolute):*")
+    lines.append("*Top 5 Symbols (Total):*")
 
     for i, (symbol, pnl) in enumerate(top5, 1):
         lines.append(f"  {i}. {symbol}: {pnl:+,.0f} TWD")
@@ -296,9 +406,24 @@ def format_slack_message(
     lines.append(f"Others subtotal: {others_subtotal:+,.0f} TWD")
     lines.append(f"Grand total: {total_pnl:+,.0f} TWD")
 
+    # Day P&L section (Today)
+    lines.append("")
+    lines.append(f"*Total P&L (Today): {total_day_pnl:+,.0f} TWD*")
+
+    lines.append("")
+    lines.append("*Top 5 Symbols (Today):*")
+    top5_day = top_day_symbols[:5]
+    for i, (symbol, pnl) in enumerate(top5_day, 1):
+        lines.append(f"  {i}. {symbol}: {pnl:+,.0f} TWD")
+
+    # Day P&L warnings
+    if missing_prev_close:
+        lines.append("")
+        lines.append(f"Day P&L warnings: missing previous close for {', '.join(sorted(missing_prev_close))}")
+
     lines.append("")
     missing_str = ", ".join(missing_symbols) if missing_symbols else "None"
-    lines.append(f"Missing prices: {missing_str}")
+    lines.append(f"Missing prices (Total): {missing_str}")
 
     if lookup_attempts:
         attempts_parts = []
@@ -347,7 +472,7 @@ def main() -> None:
         (validate_symbol(t["symbol"], f"row {i+2}"), str(t["asset_ccy"]).strip().upper())
         for i, t in enumerate(trades)
     })
-    prices, lookup_attempts = get_close_prices(symbols_with_ccy)
+    prices, prev_prices, lookup_attempts, missing_prev_close = get_close_prices(symbols_with_ccy)
     logger.info(f"Fetched prices for {len(prices)} symbols")
 
     all_symbols = {sym for sym, _ in symbols_with_ccy}
@@ -355,7 +480,11 @@ def main() -> None:
 
     grouped_txs = build_transactions(trades)
 
-    user_pnl, total_pnl, top_symbols = compute_all_pnl(grouped_txs, prices, usd_twd)
+    user_pnl, total_pnl, top_symbols, symbol_positions = compute_all_pnl(grouped_txs, prices, usd_twd)
+
+    # Compute Day P&L
+    total_day_pnl, top_day_symbols = compute_day_pnl(symbol_positions, prices, prev_prices, usd_twd)
+    logger.info(f"Day P&L calculated: {total_day_pnl:.2f} TWD")
 
     today = date.today().isoformat()
     message = format_slack_message(
@@ -363,6 +492,9 @@ def main() -> None:
         symbols_count=len(prices),
         missing_symbols=missing_symbols,
         lookup_attempts=lookup_attempts,
+        total_day_pnl=total_day_pnl,
+        top_day_symbols=top_day_symbols,
+        missing_prev_close=missing_prev_close,
     )
 
     logger.info("Posting to Slack")
