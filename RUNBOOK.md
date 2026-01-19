@@ -93,3 +93,41 @@ Here is the error log:
 	2.	你把 log 貼到 Claude Code（用上面模板）
 	3.	Claude 直接在 Codespaces 修、跑測試、push 分支、開 PR
 	4.	你在 iPad 上審一下 → merge
+
+
+   ## Sprint C – Risk Views (Completed)
+
+**Status:** ✅ Completed  
+**Release:** v0.3.0  
+**Date:** 2026-01-19
+
+### Scope
+- Added portfolio risk views to the daily Slack report (append-only).
+- No changes to existing P&L logic or outputs.
+
+### Features
+1. **Concentration Risk (by market value)**
+   - Calculates per-symbol market value using:
+     `quantity × today_close × fx_to_twd`
+   - Displays Top 5 symbols by portfolio weight.
+   - Includes alerts:
+     - ⚠️ Top-1 concentration risk if weight > 25%
+     - ⚠️ Top-3 concentration risk if combined weight > 60%
+
+2. **Currency Exposure**
+   - Aggregates portfolio market value by asset currency.
+   - Displays percentage and total TWD value per currency.
+
+### Guardrails (Enforced)
+- Sprint A (Total / Day P&L) logic frozen and unchanged.
+- No new price or FX fetches introduced.
+- Existing report sections and order preserved.
+- Risk Views appended at the end of the report only.
+
+### Files Changed
+- `services/api/daily_close.py`
+- `packages/pnl/tests/test_risk_views.py`
+
+### Validation
+- `pytest -q` passes.
+- Slack report verified with live data.
