@@ -791,11 +791,11 @@ class TestDLiteBaselineFetch:
     """Tests for D-lite baseline fetch behavior with mocked yfinance."""
 
     @patch("services.api.daily_close.yf.Ticker")
-    def test_baseline_computed_with_multiple_rows(self, mock_ticker_class):
-        """Test baseline is computed when history returns multiple rows."""
+    def test_baseline_found_with_multiple_rows(self, mock_ticker_class):
+        """Test baseline is found when history returns multiple rows."""
         import pandas as pd
 
-        # Setup mock with multiple rows (typical case)
+        # Setup mock with multiple rows
         mock_ticker = MagicMock()
         mock_hist = pd.DataFrame({
             "Close": [145.0, 148.0, 150.0],
@@ -808,17 +808,16 @@ class TestDLiteBaselineFetch:
 
         prices, missing = fetch_historical_prices(symbols_with_ccy, target_date)
 
-        # Should get the last available close (150.0)
         assert "AAPL" in prices
         assert prices["AAPL"] == Decimal("150")
         assert missing == []
 
     @patch("services.api.daily_close.yf.Ticker")
-    def test_baseline_computed_with_single_row(self, mock_ticker_class):
-        """Test baseline uses single row if that's all available."""
+    def test_baseline_missing_with_single_row(self, mock_ticker_class):
+        """Test baseline is missing when history returns only today's row."""
         import pandas as pd
 
-        # Setup mock with only 1 row (edge case)
+        # Setup mock with only today's row
         mock_ticker = MagicMock()
         mock_hist = pd.DataFrame({
             "Close": [150.0],
@@ -831,10 +830,8 @@ class TestDLiteBaselineFetch:
 
         prices, missing = fetch_historical_prices(symbols_with_ccy, target_date)
 
-        # Single row should still be used as baseline
-        assert "AAPL" in prices
-        assert prices["AAPL"] == Decimal("150")
-        assert missing == []
+        assert prices == {}
+        assert "AAPL" in missing
 
     @patch("services.api.daily_close.yf.Ticker")
     def test_baseline_missing_when_empty_history(self, mock_ticker_class):

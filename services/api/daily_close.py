@@ -1363,17 +1363,30 @@ def main() -> None:
         )
         logger.info(f"Risk views calculated: portfolio={total_portfolio_value:.0f} TWD, {len(concentration)} symbols, {len(currency_exposure)} currencies")
 
-        # Sprint D-lite: Compute Concentration Trend (7D) using Top-N symbols only
-        # Optimization: fetch historical prices only for top N symbols by market value
+        # D-lite: Compute Concentration Trend (7D) using Top-10 symbols only
+        # Fetch historical prices only for top 10 symbols by market value
         # to minimize network calls. Uses SAME fx_to_twd and currency classification as today.
         today_date = date.today()
         baseline_date = today_date - timedelta(days=7)
-        top_n_symbols_with_ccy = get_top_n_symbols_with_ccy(concentration, symbol_positions)
-        baseline_prices, baseline_missing = fetch_historical_prices(top_n_symbols_with_ccy, baseline_date)
+        top_10_symbols_with_ccy = get_top_n_symbols_with_ccy(concentration, symbol_positions, n=10)
+        baseline_prices, baseline_missing = fetch_historical_prices(top_10_symbols_with_ccy, baseline_date)
         logger.info(
-            f"D-lite: Fetched baseline prices for {len(baseline_prices)}/{len(top_n_symbols_with_ccy)} "
+            f"D-lite: Fetched baseline prices for {len(baseline_prices)}/{len(top_10_symbols_with_ccy)} "
             f"top symbols (7D ago: {baseline_date}), missing: {len(baseline_missing)}"
         )
+
+        # Compute baseline market values using baseline closes and the SAME FX-to-TWD logic as today
+        baseline_market_values = compute_market_values_twd(symbol_positions, baseline_prices, usd_twd)
+        baseline_concentration = compute_concentration_from_values(baseline_market_values)
+
+        # Compute baseline concentration weights (Top-10 subset)
+        if len(baseline_concentration) >= 3:
+            baseline_top1, baseline_top3 = compute_concentration_weights(baseline_concentration)
+            logger.info(
+                f"Baseline concentration: Top-1 {baseline_top1:.1f}%, Top-3 {baseline_top3:.1f}%"
+            )
+        else:
+            logger.warning("Baseline concentration unavailable (insufficient historical data)")
 
         # Compute concentration trend (uses today's usd_twd for both periods)
         concentration_trend = compute_concentration_trend(
