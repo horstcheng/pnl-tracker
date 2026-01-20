@@ -1,0 +1,9 @@
+{
+  "name": "pnl-tracker",
+  "version": "1.0.0",
+  "description": "PnL Tracker",
+  "dependencies": {},
+  "devDependencies": {
+    "@anthropic-ai/claude-code": "latest"
+  }
+}
