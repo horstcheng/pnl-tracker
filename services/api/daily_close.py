@@ -631,6 +631,119 @@ def compute_risk_views(
     return total_portfolio_value_twd, concentration, currency_exposure
 
 
+# Pure helper functions for concentration and trend computation (no network, no side effects)
+def compute_market_values_twd(
+    positions: Dict[str, Tuple[Decimal, str]],
+    prices: Dict[str, Decimal],
+    usd_twd: Decimal,
+) -> Dict[str, Decimal]:
+    """
+    Compute market values in TWD for each symbol.
+
+    Pure function. Reuses the same currency/FX-to-TWD logic as Sprint C compute_risk_views.
+
+    Args:
+        positions: dict of symbol -> (quantity, asset_ccy)
+        prices: dict of symbol -> close price
+        usd_twd: USD/TWD exchange rate
+
+    Returns:
+        dict of symbol -> market_value_twd
+    """
+    result: Dict[str, Decimal] = {}
+
+    for symbol, (quantity, asset_ccy) in positions.items():
+        if symbol not in prices:
+            continue
+        if quantity == Decimal("0"):
+            continue
+
+        close_price = prices[symbol]
+        market_value_native = quantity * close_price
+
+        # Same FX logic as Sprint C compute_risk_views
+        if asset_ccy == "TWD":
+            fx_to_twd = Decimal("1")
+        elif asset_ccy == "USD":
+            fx_to_twd = usd_twd
+        else:
+            # Unknown currency, treat as TWD (consistent with compute_risk_views)
+            fx_to_twd = Decimal("1")
+
+        result[symbol] = market_value_native * fx_to_twd
+
+    return result
+
+
+def compute_concentration_from_values(
+    values_twd: Dict[str, Decimal],
+) -> List[Tuple[str, Decimal, Decimal]]:
+    """
+    Compute concentration list from market values in TWD.
+
+    Pure function. Computes percentage of total for each symbol.
+
+    Args:
+        values_twd: dict of symbol -> market_value_twd
+
+    Returns:
+        list of (symbol, pct, value_twd) sorted by pct descending
+    """
+    total = sum(values_twd.values())
+
+    concentration: List[Tuple[str, Decimal, Decimal]] = []
+    if total > Decimal("0"):
+        for symbol, value_twd in values_twd.items():
+            pct = (value_twd / total) * Decimal("100")
+            concentration.append((symbol, pct, value_twd))
+
+    concentration.sort(key=lambda x: x[1], reverse=True)
+    return concentration
+
+
+def compute_topk_concentration_metrics(
+    concentration: List[Tuple[str, Decimal, Decimal]],
+    k: int = 3,
+) -> Tuple[Decimal, Decimal]:
+    """
+    Compute Top-1 and Top-K concentration metrics from sorted concentration list.
+
+    Pure function for testability.
+
+    Args:
+        concentration: list of (symbol, pct, value_twd) sorted by pct descending
+        k: number of top symbols for sum metric (default 3)
+
+    Returns:
+        (top1_pct, topk_pct_sum)
+    """
+    if not concentration:
+        return Decimal("0"), Decimal("0")
+
+    top1_pct = concentration[0][1]
+    topk_pct_sum = sum(c[1] for c in concentration[:k])
+    return top1_pct, topk_pct_sum
+
+
+def compute_trend_pp(
+    base_pct: Decimal,
+    today_pct: Decimal,
+) -> Decimal:
+    """
+    Compute trend delta in percentage points.
+
+    Pure function. Returns today - base (positive means increase).
+
+    Args:
+        base_pct: baseline percentage
+        today_pct: today's percentage
+
+    Returns:
+        delta in percentage points (today - base)
+    """
+    return today_pct - base_pct
+
+
 # Sprint D: Concentration trend helper functions
 def compute_concentration_weights(
     concentration: List[Tuple[str, Decimal, Decimal]],

@@ -8,11 +8,15 @@ import pytest
 
 from services.api.daily_close import (
     TOP_N_FOR_BASELINE,
+    compute_concentration_from_values,
     compute_concentration_weights,
     compute_concentration_from_prices,
     compute_concentration_trend,
     compute_currency_exposure_from_prices,
     compute_currency_exposure_trend,
+    compute_market_values_twd,
+    compute_topk_concentration_metrics,
+    compute_trend_pp,
     fetch_historical_prices,
     format_slack_message,
     get_top_n_symbols_with_ccy,
@@ -906,3 +910,158 @@ class TestDLiteBaselineFetch:
         # Trend computed from symbols with both prices (A, B, C)
         assert trend["today_top1"] is not None
         assert trend["baseline_top1"] is not None
+
+
+class TestPureHelperFunctions:
+    """Tests for pure helper functions (no network, no side effects)."""
+
+    def test_compute_market_values_twd_basic(self):
+        """Test market value computation with mixed currencies."""
+        positions = {
+            "AAPL": (Decimal("100"), "USD"),  # 100 * 150 * 32 = 480000
+            "2330": (Decimal("1000"), "TWD"),  # 1000 * 600 = 600000
+        }
+        prices = {
+            "AAPL": Decimal("150"),
+            "2330": Decimal("600"),
+        }
+        usd_twd = Decimal("32")
+
+        values = compute_market_values_twd(positions, prices, usd_twd)
+
+        assert values["AAPL"] == Decimal("480000")
+        assert values["2330"] == Decimal("600000")
+
+    def test_compute_market_values_twd_skips_missing_prices(self):
+        """Test that symbols without prices are skipped."""
+        positions = {
+            "AAPL": (Decimal("100"), "USD"),
+            "MISSING": (Decimal("50"), "TWD"),
+        }
+        prices = {"AAPL": Decimal("150")}
+        usd_twd = Decimal("32")
+
+        values = compute_market_values_twd(positions, prices, usd_twd)
+
+        assert "AAPL" in values
+        assert "MISSING" not in values
+
+    def test_compute_market_values_twd_skips_zero_quantity(self):
+        """Test that zero quantity positions are skipped."""
+        positions = {
+            "AAPL": (Decimal("100"), "USD"),
+            "SOLD": (Decimal("0"), "USD"),
+        }
+        prices = {
+            "AAPL": Decimal("150"),
+            "SOLD": Decimal("100"),
+        }
+        usd_twd = Decimal("32")
+
+        values = compute_market_values_twd(positions, prices, usd_twd)
+
+        assert "AAPL" in values
+        assert "SOLD" not in values
+
+    def test_compute_concentration_from_values_sums_to_100(self):
+        """Test that concentration percentages sum to approximately 100%."""
+        values_twd = {
+            "A": Decimal("400000"),
+            "B": Decimal("300000"),
+            "C": Decimal("200000"),
+            "D": Decimal("100000"),
+        }
+
+        concentration = compute_concentration_from_values(values_twd)
+
+        total_pct = sum(pct for _, pct, _ in concentration)
+        assert abs(total_pct - Decimal("100")) < Decimal("0.01")
+
+    def test_compute_concentration_from_values_sorted_descending(self):
+        """Test that concentration list is sorted by percentage descending."""
+        values_twd = {
+            "A": Decimal("100000"),  # 10%
+            "B": Decimal("300000"),  # 30%
+            "C": Decimal("600000"),  # 60%
+        }
+
+        concentration = compute_concentration_from_values(values_twd)
+
+        assert concentration[0][0] == "C"  # 60%
+        assert concentration[1][0] == "B"  # 30%
+        assert concentration[2][0] == "A"  # 10%
+
+        # Verify sorted descending
+        for i in range(len(concentration) - 1):
+            assert concentration[i][1] >= concentration[i + 1][1]
+
+    def test_compute_concentration_from_values_empty(self):
+        """Test with empty values dict."""
+        concentration = compute_concentration_from_values({})
+        assert concentration == []
+
+    def test_compute_topk_concentration_metrics_basic(self):
+        """Test top1 and topk metrics computation."""
+        concentration = [
+            ("A", Decimal("40"), Decimal("400000")),
+            ("B", Decimal("30"), Decimal("300000")),
+            ("C", Decimal("20"), Decimal("200000")),
+            ("D", Decimal("10"), Decimal("100000")),
+        ]
+
+        top1, top3 = compute_topk_concentration_metrics(concentration, k=3)
+
+        assert top1 == Decimal("40")
+        assert top3 == Decimal("90")  # 40 + 30 + 20
+
+    def test_compute_topk_concentration_metrics_custom_k(self):
+        """Test with custom k value."""
+        concentration = [
+            ("A", Decimal("50"), Decimal("500000")),
+            ("B", Decimal("30"), Decimal("300000")),
+            ("C", Decimal("20"), Decimal("200000")),
+        ]
+
+        top1, top2 = compute_topk_concentration_metrics(concentration, k=2)
+
+        assert top1 == Decimal("50")
+        assert top2 == Decimal("80")  # 50 + 30
+
+    def test_compute_topk_concentration_metrics_empty(self):
+        """Test with empty concentration list."""
+        top1, topk = compute_topk_concentration_metrics([], k=3)
+
+        assert top1 == Decimal("0")
+        assert topk == Decimal("0")
+
+    def test_compute_topk_concentration_metrics_fewer_than_k(self):
+        """Test when fewer symbols than k."""
+        concentration = [
+            ("A", Decimal("60"), Decimal("600000")),
+            ("B", Decimal("40"), Decimal("400000")),
+        ]
+
+        top1, top3 = compute_topk_concentration_metrics(concentration, k=3)
+
+        assert top1 == Decimal("60")
+        assert top3 == Decimal("100")  # Only 2 symbols, sum is 100
+
+    def test_compute_trend_pp_positive_delta(self):
+        """Test positive trend (increase from base to today)."""
+        delta = compute_trend_pp(Decimal("40"), Decimal("45"))
+        assert delta == Decimal("5")
+
+    def test_compute_trend_pp_negative_delta(self):
+        """Test negative trend (decrease from base to today)."""
+        delta = compute_trend_pp(Decimal("50"), Decimal("45"))
+        assert delta == Decimal("-5")
+
+    def test_compute_trend_pp_zero_delta(self):
+        """Test zero trend (no change)."""
+        delta = compute_trend_pp(Decimal("40"), Decimal("40"))
+        assert delta == Decimal("0")
+
+    def test_compute_trend_pp_decimal_precision(self):
+        """Test trend with decimal precision."""
+        delta = compute_trend_pp(Decimal("40.5"), Decimal("45.3"))
+        assert delta == Decimal("4.8")
