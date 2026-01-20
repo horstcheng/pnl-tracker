@@ -328,6 +328,11 @@ def get_close_prices(
     return prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug, history_count, fallback_count
 
 
+# Sprint D-lite: Fetch historical prices only for Top-N symbols to minimize network calls.
+# N=10 ensures enough symbols for top1/top3 trend computation even if some are missing.
+TOP_N_FOR_BASELINE = 10
+
+
 # Sprint D: Historical price fetch for risk trend (7D baseline)
 def fetch_historical_prices(
     symbols_with_ccy: List[Tuple[str, str]],
@@ -383,6 +388,35 @@ def fetch_historical_prices(
             logger.debug(f"No historical price for {symbol} at {target_date}")
 
     return prices, missing
+
+
+def get_top_n_symbols_with_ccy(
+    concentration: List[Tuple[str, Decimal, Decimal]],
+    symbol_positions: Dict[str, Tuple[Decimal, str]],
+    n: int = TOP_N_FOR_BASELINE,
+) -> List[Tuple[str, str]]:
+    """
+    Get top N symbols by market value with their currency classification.
+
+    D-lite optimization: Instead of fetching historical prices for ALL symbols,
+    fetch only for the top N symbols by today's market value. This minimizes
+    network calls while preserving accuracy for concentration trend computation.
+
+    Args:
+        concentration: list of (symbol, pct, value_twd) sorted by pct descending
+            (from compute_risk_views)
+        symbol_positions: dict of symbol -> (quantity, asset_ccy)
+        n: number of top symbols to return (default TOP_N_FOR_BASELINE)
+
+    Returns:
+        list of (symbol, asset_ccy) tuples for top N symbols
+    """
+    result = []
+    for symbol, _pct, _value in concentration[:n]:
+        if symbol in symbol_positions:
+            _qty, asset_ccy = symbol_positions[symbol]
+            result.append((symbol, asset_ccy))
+    return result
 
 
 def build_transactions(trades: List[dict]) -> Dict[Tuple[str, str, str], List[Transaction]]:
@@ -1216,12 +1250,17 @@ def main() -> None:
         )
         logger.info(f"Risk views calculated: portfolio={total_portfolio_value:.0f} TWD, {len(concentration)} symbols, {len(currency_exposure)} currencies")
 
-        # Sprint D: Compute Concentration Trend (7D)
-        # Fetch historical prices for 7 days ago baseline
+        # Sprint D-lite: Compute Concentration Trend (7D) using Top-N symbols only
+        # Optimization: fetch historical prices only for top N symbols by market value
+        # to minimize network calls. Uses SAME fx_to_twd and currency classification as today.
         today_date = date.today()
         baseline_date = today_date - timedelta(days=7)
-        baseline_prices, baseline_missing = fetch_historical_prices(symbols_with_ccy, baseline_date)
-        logger.info(f"Fetched baseline prices for {len(baseline_prices)} symbols (7D ago: {baseline_date}), missing: {len(baseline_missing)}")
+        top_n_symbols_with_ccy = get_top_n_symbols_with_ccy(concentration, symbol_positions)
+        baseline_prices, baseline_missing = fetch_historical_prices(top_n_symbols_with_ccy, baseline_date)
+        logger.info(
+            f"D-lite: Fetched baseline prices for {len(baseline_prices)}/{len(top_n_symbols_with_ccy)} "
+            f"top symbols (7D ago: {baseline_date}), missing: {len(baseline_missing)}"
+        )
 
         # Compute concentration trend (uses today's usd_twd for both periods)
         concentration_trend = compute_concentration_trend(

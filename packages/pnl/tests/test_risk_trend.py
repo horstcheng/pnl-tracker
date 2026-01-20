@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from services.api.daily_close import (
+    TOP_N_FOR_BASELINE,
     compute_concentration_weights,
     compute_concentration_from_prices,
     compute_concentration_trend,
@@ -14,6 +15,7 @@ from services.api.daily_close import (
     compute_currency_exposure_trend,
     fetch_historical_prices,
     format_slack_message,
+    get_top_n_symbols_with_ccy,
 )
 
 
@@ -701,3 +703,206 @@ class TestFormatSlackMessageCurrencyExposureTrend:
         currency_trend_pos = message.find("*幣別曝險趨勢（7日）：*")
 
         assert concentration_trend_pos < currency_trend_pos
+
+
+class TestGetTopNSymbolsWithCcy:
+    """Tests for D-lite get_top_n_symbols_with_ccy function."""
+
+    def test_returns_top_n_symbols(self):
+        """Test that function returns top N symbols by market value."""
+        concentration = [
+            ("A", Decimal("40"), Decimal("400000")),
+            ("B", Decimal("30"), Decimal("300000")),
+            ("C", Decimal("20"), Decimal("200000")),
+            ("D", Decimal("10"), Decimal("100000")),
+        ]
+        symbol_positions = {
+            "A": (Decimal("100"), "USD"),
+            "B": (Decimal("200"), "TWD"),
+            "C": (Decimal("300"), "USD"),
+            "D": (Decimal("400"), "TWD"),
+        }
+
+        result = get_top_n_symbols_with_ccy(concentration, symbol_positions, n=3)
+
+        assert len(result) == 3
+        assert result[0] == ("A", "USD")
+        assert result[1] == ("B", "TWD")
+        assert result[2] == ("C", "USD")
+
+    def test_returns_all_when_n_exceeds_count(self):
+        """Test that function returns all symbols when N exceeds total count."""
+        concentration = [
+            ("A", Decimal("60"), Decimal("600000")),
+            ("B", Decimal("40"), Decimal("400000")),
+        ]
+        symbol_positions = {
+            "A": (Decimal("100"), "USD"),
+            "B": (Decimal("200"), "TWD"),
+        }
+
+        result = get_top_n_symbols_with_ccy(concentration, symbol_positions, n=10)
+
+        assert len(result) == 2
+        assert result[0] == ("A", "USD")
+        assert result[1] == ("B", "TWD")
+
+    def test_skips_symbols_not_in_positions(self):
+        """Test that symbols not in symbol_positions are skipped."""
+        concentration = [
+            ("A", Decimal("50"), Decimal("500000")),
+            ("MISSING", Decimal("30"), Decimal("300000")),
+            ("B", Decimal("20"), Decimal("200000")),
+        ]
+        symbol_positions = {
+            "A": (Decimal("100"), "USD"),
+            "B": (Decimal("200"), "TWD"),
+            # MISSING not in positions
+        }
+
+        result = get_top_n_symbols_with_ccy(concentration, symbol_positions, n=3)
+
+        assert len(result) == 2
+        assert ("MISSING", "USD") not in result
+        assert ("MISSING", "TWD") not in result
+
+    def test_default_n_is_top_n_for_baseline(self):
+        """Test that default N uses TOP_N_FOR_BASELINE constant."""
+        # Create concentration list with more symbols than TOP_N_FOR_BASELINE
+        concentration = [
+            (f"SYM{i}", Decimal(str(100 - i)), Decimal(str((100 - i) * 10000)))
+            for i in range(15)
+        ]
+        symbol_positions = {
+            f"SYM{i}": (Decimal("100"), "TWD")
+            for i in range(15)
+        }
+
+        result = get_top_n_symbols_with_ccy(concentration, symbol_positions)
+
+        assert len(result) == TOP_N_FOR_BASELINE
+
+
+class TestDLiteBaselineFetch:
+    """Tests for D-lite baseline fetch behavior with mocked yfinance."""
+
+    @patch("services.api.daily_close.yf.Ticker")
+    def test_baseline_computed_with_multiple_rows(self, mock_ticker_class):
+        """Test baseline is computed when history returns multiple rows."""
+        import pandas as pd
+
+        # Setup mock with multiple rows (typical case)
+        mock_ticker = MagicMock()
+        mock_hist = pd.DataFrame({
+            "Close": [145.0, 148.0, 150.0],
+        }, index=pd.to_datetime(["2026-01-10", "2026-01-11", "2026-01-12"]))
+        mock_ticker.history.return_value = mock_hist
+        mock_ticker_class.return_value = mock_ticker
+
+        symbols_with_ccy = [("AAPL", "USD")]
+        target_date = date(2026, 1, 13)
+
+        prices, missing = fetch_historical_prices(symbols_with_ccy, target_date)
+
+        # Should get the last available close (150.0)
+        assert "AAPL" in prices
+        assert prices["AAPL"] == Decimal("150")
+        assert missing == []
+
+    @patch("services.api.daily_close.yf.Ticker")
+    def test_baseline_computed_with_single_row(self, mock_ticker_class):
+        """Test baseline uses single row if that's all available."""
+        import pandas as pd
+
+        # Setup mock with only 1 row (edge case)
+        mock_ticker = MagicMock()
+        mock_hist = pd.DataFrame({
+            "Close": [150.0],
+        }, index=pd.to_datetime(["2026-01-12"]))
+        mock_ticker.history.return_value = mock_hist
+        mock_ticker_class.return_value = mock_ticker
+
+        symbols_with_ccy = [("AAPL", "USD")]
+        target_date = date(2026, 1, 13)
+
+        prices, missing = fetch_historical_prices(symbols_with_ccy, target_date)
+
+        # Single row should still be used as baseline
+        assert "AAPL" in prices
+        assert prices["AAPL"] == Decimal("150")
+        assert missing == []
+
+    @patch("services.api.daily_close.yf.Ticker")
+    def test_baseline_missing_when_empty_history(self, mock_ticker_class):
+        """Test baseline is missing when history returns empty DataFrame."""
+        import pandas as pd
+
+        # Setup mock with empty history
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = pd.DataFrame()
+        mock_ticker_class.return_value = mock_ticker
+
+        symbols_with_ccy = [("NEWIPO", "USD")]
+        target_date = date(2026, 1, 13)
+
+        prices, missing = fetch_historical_prices(symbols_with_ccy, target_date)
+
+        # Symbol should be in missing list
+        assert prices == {}
+        assert "NEWIPO" in missing
+
+    @patch("services.api.daily_close.yf.Ticker")
+    def test_baseline_missing_when_all_nan(self, mock_ticker_class):
+        """Test baseline is missing when all Close values are NaN."""
+        import pandas as pd
+        import numpy as np
+
+        mock_ticker = MagicMock()
+        mock_hist = pd.DataFrame({
+            "Close": [np.nan, np.nan, np.nan],
+        }, index=pd.to_datetime(["2026-01-10", "2026-01-11", "2026-01-12"]))
+        mock_ticker.history.return_value = mock_hist
+        mock_ticker_class.return_value = mock_ticker
+
+        symbols_with_ccy = [("BADDATA", "USD")]
+        target_date = date(2026, 1, 13)
+
+        prices, missing = fetch_historical_prices(symbols_with_ccy, target_date)
+
+        # All NaN means no valid close, should be missing
+        assert prices == {}
+        assert "BADDATA" in missing
+
+    def test_concentration_trend_with_top_n_subset(self):
+        """Test concentration trend computation with Top-N subset."""
+        # Simulate D-lite: only top 3 symbols have baseline prices
+        symbol_positions = {
+            "A": (Decimal("100"), "TWD"),
+            "B": (Decimal("100"), "TWD"),
+            "C": (Decimal("100"), "TWD"),
+            "D": (Decimal("100"), "TWD"),  # Not in baseline (not top N)
+        }
+        today_prices = {
+            "A": Decimal("50"),
+            "B": Decimal("30"),
+            "C": Decimal("15"),
+            "D": Decimal("5"),
+        }
+        # Only top 3 have baseline (simulating D-lite fetch)
+        baseline_prices = {
+            "A": Decimal("40"),
+            "B": Decimal("35"),
+            "C": Decimal("20"),
+            # D missing - not in top N
+        }
+        usd_twd = Decimal("32")
+
+        trend = compute_concentration_trend(
+            symbol_positions, today_prices, baseline_prices, usd_twd
+        )
+
+        # Should succeed with 3 symbols
+        assert trend is not None
+        # Trend computed from symbols with both prices (A, B, C)
+        assert trend["today_top1"] is not None
+        assert trend["baseline_top1"] is not None
