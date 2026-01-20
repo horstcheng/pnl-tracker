@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest:*)",
+      "Bash(pip install:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix TypeError: convert symbol/asset_ccy to str before iteration\n\nGoogle Sheets returns numeric stock codes \\(e.g. 0050, 2330\\) as int.\nThe `\".\" not in symbol` check fails with TypeError when symbol is int.\n\nConvert to str when extracting symbols from trades to fix the issue.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(gh pr create --title \"Fix TypeError: convert symbol/asset_ccy to str before iteration\" --body \"$\\(cat <<''EOF''\n## Summary\n- Fix `TypeError: argument of type ''int'' is not iterable` in daily close workflow\n- Google Sheets returns numeric stock codes \\(0050, 2330\\) as `int`, causing `\".\" not in symbol` to fail\n- Convert `symbol` and `asset_ccy` to `str` when extracting from trades\n\n## Test plan\n- [x] `pytest -q` passes locally \\(5 passed\\)\n- [ ] CI passes on this PR\n- [ ] Daily Close workflow succeeds via `workflow_dispatch`\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd audit fields to Slack report\n\n- Symbols counted: number of symbols with prices\n- Top5 subtotal: sum of top 5 symbols P&L\n- Others subtotal: Grand total - Top5 subtotal\n- Grand total: same as Total P&L\n- Missing prices: warning line with symbols lacking prices\n\nEnsures Grand total == Top5 subtotal + Others subtotal for auditability.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(gh workflow run:*)"
+    ]
+  }
+}

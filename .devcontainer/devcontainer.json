@@ -6,6 +6,9 @@
     "ghcr.io/devcontainers/features/node:1": { "version": "20" }
   },
   "postCreateCommand": "python -m pip install -U pip && pip install -r requirements-dev.txt || true",
+  "remoteEnv": {
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}"
+  },
   "customizations": {
     "vscode": {
       "extensions": [
