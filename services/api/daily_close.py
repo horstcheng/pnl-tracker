@@ -3,7 +3,7 @@ import logging
 import os
 import urllib.request
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
@@ -328,6 +328,63 @@ def get_close_prices(
     return prices, prev_prices, lookup_attempts, missing_prev_close, missing_prev_debug, history_count, fallback_count
 
 
+# Sprint D: Historical price fetch for risk trend (7D baseline)
+def fetch_historical_prices(
+    symbols_with_ccy: List[Tuple[str, str]],
+    target_date: date,
+) -> Tuple[Dict[str, Decimal], List[str]]:
+    """
+    Fetch close prices for symbols at or before a target date.
+
+    Uses yfinance history with a date range ending at target_date + 1 day,
+    then takes the last available close in the range. This handles weekends
+    and holidays by using the nearest prior trading day.
+
+    Args:
+        symbols_with_ccy: list of (symbol, asset_ccy) tuples
+        target_date: the target date (e.g., today - 7 days)
+
+    Returns:
+        - prices: dict of symbol -> Decimal close price
+        - missing: list of symbols where price could not be fetched
+    """
+    prices: Dict[str, Decimal] = {}
+    missing: List[str] = []
+
+    # Fetch 10 calendar days ending at target_date to handle holidays/weekends
+    start_date = target_date - timedelta(days=10)
+    end_date = target_date + timedelta(days=1)  # yfinance end is exclusive
+
+    for symbol, asset_ccy in symbols_with_ccy:
+        tickers_to_try = get_yfinance_tickers_to_try(symbol, asset_ccy)
+        found = False
+
+        for yf_symbol in tickers_to_try:
+            try:
+                ticker = yf.Ticker(yf_symbol)
+                hist = ticker.history(start=start_date.isoformat(), end=end_date.isoformat())
+                if hist.empty:
+                    continue
+                close_series = hist["Close"].dropna()
+                if close_series.empty:
+                    continue
+                # Use last available close in the range (nearest prior trading day)
+                close_price = Decimal(str(close_series.iloc[-1]))
+                prices[symbol] = close_price
+                found = True
+                logger.debug(f"Historical price for {symbol} ({yf_symbol}) at {target_date}: {close_price}")
+                break
+            except Exception as e:
+                logger.debug(f"Failed to fetch historical price for {yf_symbol}: {e}")
+                continue
+
+        if not found:
+            missing.append(symbol)
+            logger.debug(f"No historical price for {symbol} at {target_date}")
+
+    return prices, missing
+
+
 def build_transactions(trades: List[dict]) -> Dict[Tuple[str, str, str], List[Transaction]]:
     """Group trades by (user_id, symbol, asset_ccy) and build Transaction objects."""
     grouped: Dict[Tuple[str, str, str], List[Transaction]] = defaultdict(list)
@@ -540,6 +597,146 @@ def compute_risk_views(
     return total_portfolio_value_twd, concentration, currency_exposure
 
 
+# Sprint D: Concentration trend helper functions
+def compute_concentration_weights(
+    concentration: List[Tuple[str, Decimal, Decimal]],
+) -> Tuple[Decimal, Decimal]:
+    """
+    Compute Top-1 and Top-3 concentration weights from sorted concentration list.
+
+    Pure function for testability.
+
+    Args:
+        concentration: list of (symbol, pct, value_twd) sorted by pct descending
+
+    Returns:
+        (top1_pct, top3_pct)
+    """
+    if not concentration:
+        return Decimal("0"), Decimal("0")
+
+    top1_pct = concentration[0][1]
+    top3_pct = sum(c[1] for c in concentration[:3])
+    return top1_pct, top3_pct
+
+
+def compute_concentration_from_prices(
+    symbol_positions: Dict[str, Tuple[Decimal, str]],
+    prices: Dict[str, Decimal],
+    usd_twd: Decimal,
+) -> List[Tuple[str, Decimal, Decimal]]:
+    """
+    Compute concentration list from positions and prices.
+
+    Reuses logic from compute_risk_views but returns only concentration.
+    Used for computing baseline concentration with historical prices.
+
+    Design note: Uses TODAY's usd_twd for both today and baseline.
+    This is intentional for trend comparison (isolate price movement effect).
+
+    Args:
+        symbol_positions: dict of symbol -> (quantity, asset_ccy)
+        prices: dict of symbol -> close price
+        usd_twd: USD/TWD exchange rate (today's rate used for both periods)
+
+    Returns:
+        concentration: list of (symbol, pct, value_twd) sorted by pct descending
+    """
+    symbol_market_values: Dict[str, Decimal] = {}
+
+    for symbol, (quantity, asset_ccy) in symbol_positions.items():
+        if symbol not in prices:
+            continue
+        if quantity == Decimal("0"):
+            continue
+
+        close_price = prices[symbol]
+        market_value_native = quantity * close_price
+
+        if asset_ccy == "TWD":
+            fx_to_twd = Decimal("1")
+        elif asset_ccy == "USD":
+            fx_to_twd = usd_twd
+        else:
+            fx_to_twd = Decimal("1")
+
+        market_value_twd = market_value_native * fx_to_twd
+        symbol_market_values[symbol] = market_value_twd
+
+    total_portfolio_value_twd = sum(symbol_market_values.values())
+
+    concentration: List[Tuple[str, Decimal, Decimal]] = []
+    if total_portfolio_value_twd > Decimal("0"):
+        for symbol, value_twd in symbol_market_values.items():
+            pct = (value_twd / total_portfolio_value_twd) * Decimal("100")
+            concentration.append((symbol, pct, value_twd))
+
+    concentration.sort(key=lambda x: x[1], reverse=True)
+    return concentration
+
+
+def compute_concentration_trend(
+    symbol_positions: Dict[str, Tuple[Decimal, str]],
+    today_prices: Dict[str, Decimal],
+    baseline_prices: Dict[str, Decimal],
+    usd_twd: Decimal,
+    min_symbols_required: int = 3,
+) -> Optional[Dict[str, Decimal]]:
+    """
+    Compute concentration trend: today vs 7D-ago baseline.
+
+    Returns trend data if at least min_symbols_required have both today and baseline prices.
+    Returns None if insufficient data (graceful degradation).
+
+    Design note: Uses TODAY's usd_twd for both periods to isolate price movement effect.
+
+    Args:
+        symbol_positions: dict of symbol -> (quantity, asset_ccy)
+        today_prices: dict of symbol -> today's close price
+        baseline_prices: dict of symbol -> 7D-ago close price
+        usd_twd: TODAY's USD/TWD rate (used for both periods)
+        min_symbols_required: minimum symbols needed to compute trend (default 3)
+
+    Returns:
+        dict with keys: baseline_top1, today_top1, delta_top1,
+                        baseline_top3, today_top3, delta_top3
+        Or None if insufficient data.
+    """
+    # Count symbols with both prices
+    symbols_with_both = [
+        sym for sym in symbol_positions
+        if sym in today_prices and sym in baseline_prices
+    ]
+
+    if len(symbols_with_both) < min_symbols_required:
+        logger.warning(
+            f"Concentration trend: insufficient data ({len(symbols_with_both)} symbols, "
+            f"need {min_symbols_required})"
+        )
+        return None
+
+    # Compute today's concentration
+    today_concentration = compute_concentration_from_prices(
+        symbol_positions, today_prices, usd_twd
+    )
+    today_top1, today_top3 = compute_concentration_weights(today_concentration)
+
+    # Compute baseline concentration (7D ago prices, today's FX)
+    baseline_concentration = compute_concentration_from_prices(
+        symbol_positions, baseline_prices, usd_twd
+    )
+    baseline_top1, baseline_top3 = compute_concentration_weights(baseline_concentration)
+
+    return {
+        "baseline_top1": baseline_top1,
+        "today_top1": today_top1,
+        "delta_top1": today_top1 - baseline_top1,
+        "baseline_top3": baseline_top3,
+        "today_top3": today_top3,
+        "delta_top3": today_top3 - baseline_top3,
+    }
+
+
 # Sprint A frozen: Day P&L logic (history + previousClose fallback).
 def compute_day_pnl(
     symbol_positions: Dict[str, Tuple[Decimal, str]],
@@ -667,6 +864,11 @@ LABELS_ZH = {
     "top1_alert": "單一標的集中度風險",
     "top3_alert": "前三大集中度風險",
     "currency_exposure": "幣別曝險",
+    # Sprint D: Risk trend labels
+    "risk_trend_7d": "風險趨勢（7日）",
+    "top1_concentration": "Top-1 集中度",
+    "top3_concentration": "Top-3 集中度",
+    "risk_trend_unavailable": "無法取得足夠的歷史價格，略過。",
 }
 
 
@@ -687,6 +889,7 @@ def format_slack_message(
     day_pnl_fallback_count: int = 0,
     concentration: Optional[List[Tuple[str, Decimal, Decimal]]] = None,
     currency_exposure: Optional[List[Tuple[str, Decimal, Decimal]]] = None,
+    concentration_trend: Optional[Dict[str, Decimal]] = None,
 ) -> str:
     """Format the Slack message."""
     L = LABELS_ZH
@@ -792,6 +995,25 @@ def format_slack_message(
         for ccy, pct, value_twd in currency_exposure:
             lines.append(f"  - {ccy}：{pct:.1f}%（{value_twd:,.0f}）")
 
+    # Sprint D: Risk Trend (7D) section (append-only, after Risk Views)
+    lines.append("")
+    if concentration_trend is not None:
+        lines.append(f"*{L['risk_trend_7d']}：*")
+        lines.append(
+            f"  - {L['top1_concentration']}："
+            f"{concentration_trend['baseline_top1']:.1f}% → "
+            f"{concentration_trend['today_top1']:.1f}%"
+            f"（{concentration_trend['delta_top1']:+.1f}%）"
+        )
+        lines.append(
+            f"  - {L['top3_concentration']}："
+            f"{concentration_trend['baseline_top3']:.1f}% → "
+            f"{concentration_trend['today_top3']:.1f}%"
+            f"（{concentration_trend['delta_top3']:+.1f}%）"
+        )
+    else:
+        lines.append(f"*{L['risk_trend_7d']}：*{L['risk_trend_unavailable']}")
+
     return "\n".join(lines)
 
 
@@ -852,7 +1074,26 @@ def main() -> None:
         )
         logger.info(f"Risk views calculated: portfolio={total_portfolio_value:.0f} TWD, {len(concentration)} symbols, {len(currency_exposure)} currencies")
 
-        today = date.today().isoformat()
+        # Sprint D: Compute Concentration Trend (7D)
+        # Fetch historical prices for 7 days ago baseline
+        today_date = date.today()
+        baseline_date = today_date - timedelta(days=7)
+        baseline_prices, baseline_missing = fetch_historical_prices(symbols_with_ccy, baseline_date)
+        logger.info(f"Fetched baseline prices for {len(baseline_prices)} symbols (7D ago: {baseline_date}), missing: {len(baseline_missing)}")
+
+        # Compute concentration trend (uses today's usd_twd for both periods)
+        concentration_trend = compute_concentration_trend(
+            symbol_positions, prices, baseline_prices, usd_twd
+        )
+        if concentration_trend:
+            logger.info(
+                f"Concentration trend: Top-1 {concentration_trend['baseline_top1']:.1f}% -> {concentration_trend['today_top1']:.1f}%, "
+                f"Top-3 {concentration_trend['baseline_top3']:.1f}% -> {concentration_trend['today_top3']:.1f}%"
+            )
+        else:
+            logger.warning("Concentration trend unavailable (insufficient historical data)")
+
+        today = today_date.isoformat()
         message = format_slack_message(
             today, usd_twd, total_pnl, user_pnl, top_symbols,
             symbols_count=len(prices),
@@ -866,6 +1107,7 @@ def main() -> None:
             day_pnl_fallback_count=fallback_count,
             concentration=concentration,
             currency_exposure=currency_exposure,
+            concentration_trend=concentration_trend,
         )
 
         logger.info("Posting to Slack")
