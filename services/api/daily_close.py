@@ -1024,8 +1024,8 @@ LABELS_ZH = {
     "top1_alert": "單一標的集中度風險",
     "top3_alert": "前三大集中度風險",
     "currency_exposure": "幣別曝險",
-    # Sprint D: Risk trend labels
-    "risk_trend_7d": "風險趨勢（7日）",
+    # Sprint D-lite: Risk trend labels (Top-N baseline)
+    "risk_trend_7d": "風險趨勢（7日｜Top-N）",
     "top1_concentration": "Top-1 集中度",
     "top3_concentration": "Top-3 集中度",
     "risk_trend_unavailable": "無法取得足夠的歷史價格，略過。",
