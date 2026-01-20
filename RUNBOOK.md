@@ -129,6 +129,37 @@ Here is the error log:
 - `packages/pnl/tests/test_risk_views.py`
 
 ### Validation
-- `pytest -q` passes.n
-
+- `pytest -q` passes.
 - Slack report verified with live data.
+
+---
+
+## Sprint D0 – Slack zh-TW Localization (Completed)
+
+**Status:** ✅ Completed
+**Date:** 2026-01-20
+
+### Scope
+- Localized all human-facing Slack report labels to Traditional Chinese (zh-TW).
+- Display-only change; no modifications to P&L calculations or section ordering.
+
+### Changes
+- Added `LABELS_ZH` constant dict with 27 zh-TW translations.
+- Replaced English labels in `format_slack_message()` with zh-TW equivalents.
+- Used full-width colon（：）and parentheses（（）for zh-TW formatting.
+- Updated test assertions to match new zh-TW labels.
+
+### Guardrails (Enforced)
+- Sprint A (Total / Day P&L) logic frozen and unchanged.
+- Sprint C (Risk Views) logic frozen and unchanged.
+- Report section order unchanged.
+- Numbers, tickers, and numeric formatting (commas, decimals) unchanged.
+
+### Files Changed
+- `services/api/daily_close.py`
+- `packages/pnl/tests/test_day_pnl.py`
+- `packages/pnl/tests/test_risk_views.py`
+
+### Validation
+- `pytest -q` passes (63 tests).
+- Slack report shows Chinese labels with same numbers and structure.
