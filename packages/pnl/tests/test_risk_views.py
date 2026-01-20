@@ -438,3 +438,50 @@ class TestRiskViewsIntegration:
 
         assert risk_views_pos < concentration_pos
         assert concentration_pos < currency_pos
+
+
+class TestDisplaySymbol:
+    """Tests for Sprint E display_symbol function."""
+
+    def test_display_symbol_mapped_ticker(self):
+        """Test that mapped ticker returns 'SYMBOL（NAME）' format."""
+        from services.api.daily_close import display_symbol
+
+        result = display_symbol("0050")
+        assert result == "0050（元大台灣50）"
+
+        result = display_symbol("2330")
+        assert result == "2330（台積電）"
+
+        result = display_symbol("00983A")
+        assert result == "00983A（中信美10Y+A公司債）"
+
+    def test_display_symbol_unmapped_ticker(self):
+        """Test that unmapped ticker returns original symbol unchanged."""
+        from services.api.daily_close import display_symbol
+
+        result = display_symbol("AAPL")
+        assert result == "AAPL"
+
+        result = display_symbol("TSLA")
+        assert result == "TSLA"
+
+        result = display_symbol("UNKNOWN")
+        assert result == "UNKNOWN"
+
+    def test_display_symbol_does_not_affect_underlying(self):
+        """Test that display_symbol is display-only and does not modify the symbol key."""
+        from services.api.daily_close import display_symbol, SYMBOL_NAMES_ZH
+
+        symbol = "0050"
+        display = display_symbol(symbol)
+
+        # Symbol key is unchanged
+        assert symbol == "0050"
+
+        # Display shows name
+        assert display == "0050（元大台灣50）"
+
+        # Underlying dict unchanged
+        assert "0050" in SYMBOL_NAMES_ZH
+        assert SYMBOL_NAMES_ZH["0050"] == "元大台灣50"

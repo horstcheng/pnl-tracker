@@ -604,6 +604,41 @@ def compute_day_pnl(
     return total_day_pnl, sorted_day_pnl
 
 
+# Sprint E: Symbol display names (zh-TW) for Slack report readability
+# Display-only mapping. Does NOT affect symbol keys used for calculations or price lookup.
+SYMBOL_NAMES_ZH = {
+    "0050": "元大台灣50",
+    "0052": "富邦科技",
+    "00687B": "國泰20年美債",
+    "00713": "元大台灣高息低波",
+    "00953B": "國泰10Y+金融債",
+    "00965": "富邦A級公司債",
+    "00972": "凱基美國非投等債",
+    "00983A": "中信美10Y+A公司債",
+    "00984A": "中信10Y+金融債",
+    "00988A": "凱基AAA-A公司債",
+    "009805": "元大20年美債",
+    "009812": "元大投等債15Y+",
+    "1519": "華城",
+    "4979": "華星光",
+    "6442": "光聖",
+    "6789": "采鈺",
+    "2330": "台積電",
+}
+
+
+def display_symbol(symbol: str) -> str:
+    """
+    Return display string for symbol: 'SYMBOL（NAME）' if mapped, else 'SYMBOL'.
+
+    Display-only. Does NOT affect underlying symbol keys used for calculations.
+    """
+    name = SYMBOL_NAMES_ZH.get(symbol)
+    if name:
+        return f"{symbol}（{name}）"
+    return symbol
+
+
 # zh-TW display labels for Slack report (display-only, no logic change)
 LABELS_ZH = {
     "daily_report": "每日損益報表",
@@ -676,7 +711,7 @@ def format_slack_message(
     lines.append(f"*{L['top5_total']}：*")
 
     for i, (symbol, pnl) in enumerate(top5, 1):
-        lines.append(f"  {i}. {symbol}：{pnl:+,.0f} TWD")
+        lines.append(f"  {i}. {display_symbol(symbol)}：{pnl:+,.0f} TWD")
 
     lines.append("")
     lines.append(f"{L['top5_subtotal']}：{top5_subtotal:+,.0f} TWD")
@@ -691,7 +726,7 @@ def format_slack_message(
     lines.append(f"*{L['top5_today']}：*")
     top5_day = top_day_symbols[:5]
     for i, (symbol, pnl) in enumerate(top5_day, 1):
-        lines.append(f"  {i}. {symbol}：{pnl:+,.0f} TWD")
+        lines.append(f"  {i}. {display_symbol(symbol)}：{pnl:+,.0f} TWD")
 
     # Day P&L data source summary
     lines.append("")
@@ -740,7 +775,7 @@ def format_slack_message(
         lines.append(f"*{L['concentration_risk']}：*")
         top5_concentration = concentration[:5]
         for i, (symbol, pct, value_twd) in enumerate(top5_concentration, 1):
-            lines.append(f"  {i}. {symbol}：{pct:.1f}%（{value_twd:,.0f}）")
+            lines.append(f"  {i}. {display_symbol(symbol)}：{pct:.1f}%（{value_twd:,.0f}）")
 
         # Concentration risk alerts
         if concentration:
