@@ -5,10 +5,7 @@
     "ghcr.io/devcontainers/features/python:1": { "version": "3.11" },
     "ghcr.io/devcontainers/features/node:1": { "version": "20" }
   },
-  "postCreateCommand": "bash -c 'python -m pip install -U pip && pip install -r requirements-dev.txt || true; npm install && npm link @anthropic-ai/claude-code || true'",
-  "remoteEnv": {
-    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}"
-  },
+  "postCreateCommand": "pip install --upgrade pip && (pip install -r requirements-dev.txt || echo 'No requirements file found') && npm install -g @anthropic-ai/claude-code",
   "customizations": {
     "vscode": {
       "extensions": [
