@@ -10,6 +10,8 @@ from services.api.daily_close import (
     compute_concentration_weights,
     compute_concentration_from_prices,
     compute_concentration_trend,
+    compute_currency_exposure_from_prices,
+    compute_currency_exposure_trend,
     fetch_historical_prices,
     format_slack_message,
 )
@@ -423,3 +425,279 @@ class TestFormatSlackMessageRiskTrend:
         assert "*風險視圖：*" in message
         assert "*集中度風險（依市值）：*" in message
         assert "*幣別曝險：*" in message
+
+
+class TestComputeCurrencyExposureFromPrices:
+    """Tests for compute_currency_exposure_from_prices pure function."""
+
+    def test_basic_currency_exposure(self):
+        """Test basic currency exposure computation."""
+        symbol_positions = {
+            "AAPL": (Decimal("100"), "USD"),  # 100 * 150 * 32 = 480000 TWD
+            "TSLA": (Decimal("50"), "USD"),   # 50 * 200 * 32 = 320000 TWD
+            "2330": (Decimal("1000"), "TWD"),  # 1000 * 600 = 600000 TWD
+        }
+        prices = {
+            "AAPL": Decimal("150"),
+            "TSLA": Decimal("200"),
+            "2330": Decimal("600"),
+        }
+        usd_twd = Decimal("32")
+
+        exposure = compute_currency_exposure_from_prices(
+            symbol_positions, prices, usd_twd
+        )
+
+        # Total: 480000 + 320000 + 600000 = 1400000
+        # USD: 800000 / 1400000 = 57.14%
+        # TWD: 600000 / 1400000 = 42.86%
+        assert len(exposure) == 2
+        # Sorted by pct desc
+        usd_item = next(e for e in exposure if e[0] == "USD")
+        twd_item = next(e for e in exposure if e[0] == "TWD")
+        assert abs(usd_item[1] - Decimal("57.14")) < Decimal("0.01")
+        assert abs(twd_item[1] - Decimal("42.86")) < Decimal("0.01")
+
+    def test_single_currency(self):
+        """Test with single currency portfolio."""
+        symbol_positions = {
+            "AAPL": (Decimal("100"), "USD"),
+            "TSLA": (Decimal("50"), "USD"),
+        }
+        prices = {
+            "AAPL": Decimal("150"),
+            "TSLA": Decimal("200"),
+        }
+        usd_twd = Decimal("32")
+
+        exposure = compute_currency_exposure_from_prices(
+            symbol_positions, prices, usd_twd
+        )
+
+        assert len(exposure) == 1
+        assert exposure[0][0] == "USD"
+        assert exposure[0][1] == Decimal("100")
+
+    def test_skips_missing_prices(self):
+        """Test that symbols without prices are skipped."""
+        symbol_positions = {
+            "AAPL": (Decimal("100"), "USD"),
+            "UNKNOWN": (Decimal("50"), "TWD"),
+        }
+        prices = {"AAPL": Decimal("150")}
+        usd_twd = Decimal("32")
+
+        exposure = compute_currency_exposure_from_prices(
+            symbol_positions, prices, usd_twd
+        )
+
+        assert len(exposure) == 1
+        assert exposure[0][0] == "USD"
+
+
+class TestComputeCurrencyExposureTrend:
+    """Tests for compute_currency_exposure_trend function."""
+
+    def test_trend_computation(self):
+        """Test currency exposure trend with synthetic data."""
+        symbol_positions = {
+            "AAPL": (Decimal("100"), "USD"),
+            "2330": (Decimal("100"), "TWD"),
+            "0050": (Decimal("100"), "TWD"),
+        }
+        # Today: AAPL=150 (4800 TWD), 2330=500 (500 TWD), 0050=100 (100 TWD)
+        # Total: 5400 TWD, USD: 88.89%, TWD: 11.11%
+        today_prices = {
+            "AAPL": Decimal("150"),
+            "2330": Decimal("500"),
+            "0050": Decimal("100"),
+        }
+        # Baseline: AAPL=100 (3200 TWD), 2330=600 (600 TWD), 0050=200 (200 TWD)
+        # Total: 4000 TWD, USD: 80%, TWD: 20%
+        baseline_prices = {
+            "AAPL": Decimal("100"),
+            "2330": Decimal("600"),
+            "0050": Decimal("200"),
+        }
+        usd_twd = Decimal("32")
+
+        trend = compute_currency_exposure_trend(
+            symbol_positions, today_prices, baseline_prices, usd_twd
+        )
+
+        assert trend is not None
+        assert len(trend) == 2
+
+        # Find USD and TWD entries
+        usd_trend = next(t for t in trend if t["ccy"] == "USD")
+        twd_trend = next(t for t in trend if t["ccy"] == "TWD")
+
+        assert usd_trend["baseline_pct"] == Decimal("80")
+        assert twd_trend["baseline_pct"] == Decimal("20")
+
+        # Today calculations
+        # AAPL: 100 * 150 * 32 = 480000, 2330: 100 * 500 = 50000, 0050: 100 * 100 = 10000
+        # Total: 540000, USD: 480000/540000 = 88.89%, TWD: 60000/540000 = 11.11%
+        assert abs(usd_trend["today_pct"] - Decimal("88.89")) < Decimal("0.01")
+        assert abs(twd_trend["today_pct"] - Decimal("11.11")) < Decimal("0.01")
+
+    def test_trend_with_currency_appearing_only_baseline(self):
+        """Test trend when a currency exists only in baseline (e.g., sold all TWD)."""
+        symbol_positions = {
+            "AAPL": (Decimal("100"), "USD"),
+            "2330": (Decimal("100"), "TWD"),
+        }
+        today_prices = {
+            "AAPL": Decimal("150"),
+            # 2330 not in today prices (position sold or delisted)
+        }
+        baseline_prices = {
+            "AAPL": Decimal("100"),
+            "2330": Decimal("500"),
+        }
+        usd_twd = Decimal("32")
+
+        trend = compute_currency_exposure_trend(
+            symbol_positions, today_prices, baseline_prices, usd_twd,
+            min_symbols_required=1
+        )
+
+        assert trend is not None
+        # Today: only USD (100%)
+        # Baseline: USD 86.49%, TWD 13.51% (approx)
+        # Both currencies should be in result (union)
+        currencies = {t["ccy"] for t in trend}
+        assert "USD" in currencies
+        assert "TWD" in currencies
+
+    def test_insufficient_data_returns_none(self):
+        """Test that insufficient data returns None gracefully."""
+        symbol_positions = {
+            "AAPL": (Decimal("100"), "USD"),
+            "2330": (Decimal("100"), "TWD"),
+        }
+        today_prices = {"AAPL": Decimal("150"), "2330": Decimal("500")}
+        baseline_prices = {"AAPL": Decimal("100")}  # Only 1 symbol
+        usd_twd = Decimal("32")
+
+        trend = compute_currency_exposure_trend(
+            symbol_positions, today_prices, baseline_prices, usd_twd
+        )
+
+        assert trend is None
+
+    def test_sorted_by_today_pct_descending(self):
+        """Test that result is sorted by today's pct descending."""
+        symbol_positions = {
+            "AAPL": (Decimal("100"), "USD"),
+            "2330": (Decimal("1000"), "TWD"),
+            "0050": (Decimal("100"), "TWD"),
+        }
+        # TWD should be larger today
+        today_prices = {
+            "AAPL": Decimal("100"),  # 3200 TWD
+            "2330": Decimal("600"),  # 600000 TWD
+            "0050": Decimal("100"),  # 10000 TWD
+        }
+        baseline_prices = {
+            "AAPL": Decimal("100"),
+            "2330": Decimal("600"),
+            "0050": Decimal("100"),
+        }
+        usd_twd = Decimal("32")
+
+        trend = compute_currency_exposure_trend(
+            symbol_positions, today_prices, baseline_prices, usd_twd
+        )
+
+        assert trend is not None
+        # TWD should be first (larger exposure)
+        assert trend[0]["ccy"] == "TWD"
+        assert trend[1]["ccy"] == "USD"
+
+
+class TestFormatSlackMessageCurrencyExposureTrend:
+    """Tests for Currency Exposure Trend section in format_slack_message."""
+
+    def _create_base_message_params(self):
+        """Create base parameters for format_slack_message."""
+        return {
+            "today": "2026-01-20",
+            "usd_twd": Decimal("32.5"),
+            "total_pnl": Decimal("100000"),
+            "user_pnl": {"user1": Decimal("100000")},
+            "top_symbols": [("AAPL", Decimal("50000"))],
+            "symbols_count": 5,
+            "missing_symbols": [],
+            "lookup_attempts": {},
+            "total_day_pnl": Decimal("5000"),
+            "top_day_symbols": [("AAPL", Decimal("3000"))],
+            "missing_prev_close": [],
+            "concentration": [("AAPL", Decimal("50"), Decimal("500000"))],
+            "currency_exposure": [("USD", Decimal("100"), Decimal("500000"))],
+            "concentration_trend": {
+                "baseline_top1": Decimal("40"),
+                "today_top1": Decimal("45"),
+                "delta_top1": Decimal("5"),
+                "baseline_top3": Decimal("75"),
+                "today_top3": Decimal("80"),
+                "delta_top3": Decimal("5"),
+            },
+        }
+
+    def test_currency_exposure_trend_present(self):
+        """Test that currency exposure trend section is present when data available."""
+        params = self._create_base_message_params()
+        params["currency_exposure_trend"] = [
+            {
+                "ccy": "USD",
+                "baseline_pct": Decimal("60.5"),
+                "today_pct": Decimal("55.2"),
+                "delta_pct": Decimal("-5.3"),
+            },
+            {
+                "ccy": "TWD",
+                "baseline_pct": Decimal("39.5"),
+                "today_pct": Decimal("44.8"),
+                "delta_pct": Decimal("5.3"),
+            },
+        ]
+
+        message = format_slack_message(**params)
+
+        assert "*幣別曝險趨勢（7日）：*" in message
+        assert "USD" in message
+        assert "60.5% → 55.2%" in message
+        assert "-5.3%" in message
+        assert "TWD" in message
+        assert "39.5% → 44.8%" in message
+        assert "+5.3%" in message
+
+    def test_currency_exposure_trend_unavailable(self):
+        """Test fallback message when currency exposure trend unavailable."""
+        params = self._create_base_message_params()
+        params["currency_exposure_trend"] = None
+
+        message = format_slack_message(**params)
+
+        assert "*幣別曝險趨勢（7日）：*" in message
+        assert "無法取得足夠的歷史價格，略過。" in message
+
+    def test_currency_exposure_trend_appended_after_concentration_trend(self):
+        """Test that currency exposure trend appears after concentration trend."""
+        params = self._create_base_message_params()
+        params["currency_exposure_trend"] = [
+            {
+                "ccy": "USD",
+                "baseline_pct": Decimal("60"),
+                "today_pct": Decimal("55"),
+                "delta_pct": Decimal("-5"),
+            },
+        ]
+
+        message = format_slack_message(**params)
+
+        concentration_trend_pos = message.find("*風險趨勢（7日）：*")
+        currency_trend_pos = message.find("*幣別曝險趨勢（7日）：*")
+
+        assert concentration_trend_pos < currency_trend_pos

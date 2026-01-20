@@ -737,6 +737,132 @@ def compute_concentration_trend(
     }
 
 
+def compute_currency_exposure_from_prices(
+    symbol_positions: Dict[str, Tuple[Decimal, str]],
+    prices: Dict[str, Decimal],
+    usd_twd: Decimal,
+) -> List[Tuple[str, Decimal, Decimal]]:
+    """
+    Compute currency exposure from positions and prices.
+
+    Groups market values by currency and computes percentage exposure.
+    Used for computing baseline currency exposure with historical prices.
+
+    Design note: Uses TODAY's usd_twd for both today and baseline.
+    This is intentional for trend comparison (isolate price movement effect).
+
+    Args:
+        symbol_positions: dict of symbol -> (quantity, asset_ccy)
+        prices: dict of symbol -> close price
+        usd_twd: USD/TWD exchange rate (today's rate used for both periods)
+
+    Returns:
+        currency_exposure: list of (ccy, pct, value_twd) sorted by pct descending
+    """
+    currency_values: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+
+    for symbol, (quantity, asset_ccy) in symbol_positions.items():
+        if symbol not in prices:
+            continue
+        if quantity == Decimal("0"):
+            continue
+
+        close_price = prices[symbol]
+        market_value_native = quantity * close_price
+
+        if asset_ccy == "TWD":
+            fx_to_twd = Decimal("1")
+        elif asset_ccy == "USD":
+            fx_to_twd = usd_twd
+        else:
+            fx_to_twd = Decimal("1")
+
+        market_value_twd = market_value_native * fx_to_twd
+        currency_values[asset_ccy] += market_value_twd
+
+    total_portfolio_value_twd = sum(currency_values.values())
+
+    currency_exposure: List[Tuple[str, Decimal, Decimal]] = []
+    if total_portfolio_value_twd > Decimal("0"):
+        for ccy, value_twd in currency_values.items():
+            pct = (value_twd / total_portfolio_value_twd) * Decimal("100")
+            currency_exposure.append((ccy, pct, value_twd))
+
+    currency_exposure.sort(key=lambda x: x[1], reverse=True)
+    return currency_exposure
+
+
+def compute_currency_exposure_trend(
+    symbol_positions: Dict[str, Tuple[Decimal, str]],
+    today_prices: Dict[str, Decimal],
+    baseline_prices: Dict[str, Decimal],
+    usd_twd: Decimal,
+    min_symbols_required: int = 3,
+) -> Optional[List[Dict[str, Decimal]]]:
+    """
+    Compute currency exposure trend: today vs 7D-ago baseline.
+
+    Returns trend data if at least min_symbols_required have both today and baseline prices.
+    Returns None if insufficient data (graceful degradation).
+
+    Design note: Uses TODAY's usd_twd for both periods to isolate price movement effect.
+
+    Args:
+        symbol_positions: dict of symbol -> (quantity, asset_ccy)
+        today_prices: dict of symbol -> today's close price
+        baseline_prices: dict of symbol -> 7D-ago close price
+        usd_twd: TODAY's USD/TWD rate (used for both periods)
+        min_symbols_required: minimum symbols needed to compute trend (default 3)
+
+    Returns:
+        list of dicts, each with keys: ccy, baseline_pct, today_pct, delta_pct
+        Sorted by today_pct descending. Includes all currencies in union of baseline and today.
+        Or None if insufficient data.
+    """
+    # Count symbols with both prices
+    symbols_with_both = [
+        sym for sym in symbol_positions
+        if sym in today_prices and sym in baseline_prices
+    ]
+
+    if len(symbols_with_both) < min_symbols_required:
+        logger.warning(
+            f"Currency exposure trend: insufficient data ({len(symbols_with_both)} symbols, "
+            f"need {min_symbols_required})"
+        )
+        return None
+
+    # Compute today's currency exposure
+    today_exposure = compute_currency_exposure_from_prices(
+        symbol_positions, today_prices, usd_twd
+    )
+    today_by_ccy = {ccy: pct for ccy, pct, _ in today_exposure}
+
+    # Compute baseline currency exposure (7D ago prices, today's FX)
+    baseline_exposure = compute_currency_exposure_from_prices(
+        symbol_positions, baseline_prices, usd_twd
+    )
+    baseline_by_ccy = {ccy: pct for ccy, pct, _ in baseline_exposure}
+
+    # Union of all currencies
+    all_currencies = set(today_by_ccy.keys()) | set(baseline_by_ccy.keys())
+
+    result = []
+    for ccy in all_currencies:
+        today_pct = today_by_ccy.get(ccy, Decimal("0"))
+        baseline_pct = baseline_by_ccy.get(ccy, Decimal("0"))
+        result.append({
+            "ccy": ccy,
+            "baseline_pct": baseline_pct,
+            "today_pct": today_pct,
+            "delta_pct": today_pct - baseline_pct,
+        })
+
+    # Sort by today's exposure descending
+    result.sort(key=lambda x: x["today_pct"], reverse=True)
+    return result
+
+
 # Sprint A frozen: Day P&L logic (history + previousClose fallback).
 def compute_day_pnl(
     symbol_positions: Dict[str, Tuple[Decimal, str]],
@@ -869,6 +995,7 @@ LABELS_ZH = {
     "top1_concentration": "Top-1 集中度",
     "top3_concentration": "Top-3 集中度",
     "risk_trend_unavailable": "無法取得足夠的歷史價格，略過。",
+    "currency_exposure_trend_7d": "幣別曝險趨勢（7日）",
 }
 
 
@@ -890,6 +1017,7 @@ def format_slack_message(
     concentration: Optional[List[Tuple[str, Decimal, Decimal]]] = None,
     currency_exposure: Optional[List[Tuple[str, Decimal, Decimal]]] = None,
     concentration_trend: Optional[Dict[str, Decimal]] = None,
+    currency_exposure_trend: Optional[List[Dict[str, Decimal]]] = None,
 ) -> str:
     """Format the Slack message."""
     L = LABELS_ZH
@@ -1014,6 +1142,20 @@ def format_slack_message(
     else:
         lines.append(f"*{L['risk_trend_7d']}：*{L['risk_trend_unavailable']}")
 
+    # Sprint D extension: Currency Exposure Trend (7D) section (append-only)
+    lines.append("")
+    if currency_exposure_trend is not None:
+        lines.append(f"*{L['currency_exposure_trend_7d']}：*")
+        for item in currency_exposure_trend:
+            lines.append(
+                f"  - {item['ccy']}："
+                f"{item['baseline_pct']:.1f}% → "
+                f"{item['today_pct']:.1f}%"
+                f"（{item['delta_pct']:+.1f}%）"
+            )
+    else:
+        lines.append(f"*{L['currency_exposure_trend_7d']}：*{L['risk_trend_unavailable']}")
+
     return "\n".join(lines)
 
 
@@ -1093,6 +1235,19 @@ def main() -> None:
         else:
             logger.warning("Concentration trend unavailable (insufficient historical data)")
 
+        # Compute currency exposure trend (uses today's usd_twd for both periods)
+        currency_exposure_trend = compute_currency_exposure_trend(
+            symbol_positions, prices, baseline_prices, usd_twd
+        )
+        if currency_exposure_trend:
+            trend_summary = ", ".join(
+                f"{item['ccy']} {item['baseline_pct']:.1f}%->{item['today_pct']:.1f}%"
+                for item in currency_exposure_trend
+            )
+            logger.info(f"Currency exposure trend: {trend_summary}")
+        else:
+            logger.warning("Currency exposure trend unavailable (insufficient historical data)")
+
         today = today_date.isoformat()
         message = format_slack_message(
             today, usd_twd, total_pnl, user_pnl, top_symbols,
@@ -1108,6 +1263,7 @@ def main() -> None:
             concentration=concentration,
             currency_exposure=currency_exposure,
             concentration_trend=concentration_trend,
+            currency_exposure_trend=currency_exposure_trend,
         )
 
         logger.info("Posting to Slack")
