@@ -1,5 +1,8 @@
 {
     "remote.autoForwardPortsFallback": 0,
-    "google.cloud.projectId": ""
+    "google.cloud.projectId": "",
+    "github-actions.workflows.pinned.workflows": [
+        ".github/workflows/daily_close.yml"
+    ]
 
 }
