@@ -129,5 +129,6 @@ Here is the error log:
 - `packages/pnl/tests/test_risk_views.py`
 
 ### Validation
-- `pytest -q` passes.
+- `pytest -q` passes.n
+
 - Slack report verified with live data.

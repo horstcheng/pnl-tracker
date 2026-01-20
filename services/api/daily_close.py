@@ -142,6 +142,7 @@ def normalize_ticker(symbol: str, asset_ccy: str) -> str:
     """
     # Ensure symbol is treated as string, preserving leading zeros and letters
     symbol = str(symbol).strip()
+    asset_ccy = str(asset_ccy).strip().upper()
 
     # For TWD symbols, use normalize_twd_ticker for consistent handling
     if asset_ccy == "TWD":
@@ -157,6 +158,7 @@ def get_yfinance_tickers_to_try(symbol: str, asset_ccy: str) -> List[str]:
     Uses normalize_ticker() for the primary ticker, then adds .TWO fallback for TWD.
     """
     symbol = str(symbol).strip()
+    asset_ccy = str(asset_ccy).strip().upper()
     primary = normalize_ticker(symbol, asset_ccy)
 
     # For TWD symbols without existing suffix, also try OTC market (.TWO) as fallback
@@ -337,10 +339,32 @@ def build_transactions(trades: List[dict]) -> Dict[Tuple[str, str, str], List[Tr
         symbol = validate_symbol(trade["symbol"], row_context)
         asset_ccy = str(trade["asset_ccy"]).strip().upper()
         side = str(trade["side"]).strip().upper()
-        quantity = Decimal(str(trade["quantity"]))
-        price = Decimal(str(trade["price"]))
-        fee = Decimal(str(trade["fee"]))
+        
+        # Validate numeric fields
+        try:
+            quantity = Decimal(str(trade["quantity"]))
+            if quantity < 0:
+                raise ValueError(f"Quantity must be non-negative, got {quantity} ({row_context})")
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid quantity {trade.get('quantity')}: {e} ({row_context})")
+        
+        try:
+            price = Decimal(str(trade["price"]))
+            if price < 0:
+                raise ValueError(f"Price must be non-negative, got {price} ({row_context})")
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid price {trade.get('price')}: {e} ({row_context})")
+        
+        try:
+            fee = Decimal(str(trade["fee"]))
+            if fee < 0:
+                raise ValueError(f"Fee must be non-negative, got {fee} ({row_context})")
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid fee {trade.get('fee')}: {e} ({row_context})")
+        
         trade_date = str(trade["trade_date"]).strip()
+        if not trade_date:
+            raise ValueError(f"Trade date cannot be empty ({row_context})")
 
         tx_type = TxType.BUY if side == "BUY" else TxType.SELL
 
@@ -411,6 +435,10 @@ def compute_all_pnl(
         # Aggregate position quantity per symbol for Day P&L
         if symbol in symbol_positions:
             existing_qty, existing_ccy = symbol_positions[symbol]
+            if existing_ccy != asset_ccy:
+                logger.warning(
+                    f"Currency mismatch for {symbol}: existing {existing_ccy} vs {asset_ccy}"
+                )
             symbol_positions[symbol] = (existing_qty + result.quantity, existing_ccy)
         else:
             symbol_positions[symbol] = (result.quantity, asset_ccy)
@@ -556,6 +584,7 @@ def compute_day_pnl(
         elif asset_ccy == "USD":
             day_pnl_twd = day_pnl_native * usd_twd
         else:
+            logger.warning(f"Unknown currency {asset_ccy} for {symbol}, treating as TWD")
             day_pnl_twd = day_pnl_native
 
         symbol_day_pnl[symbol] = day_pnl_twd
