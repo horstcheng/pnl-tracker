@@ -1,13 +1,17 @@
 {
   "name": "pnl-tracker",
-  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
   "features": {
-    "ghcr.io/devcontainers/features/python:1": { "version": "3.11" },
-    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
   },
-  "postCreateCommand": "pip install --upgrade pip && (pip install -r requirements-dev.txt || echo 'No requirements file found') && npm install -g @anthropic-ai/claude-code",
+  "postCreateCommand": "pip install --upgrade pip && npm install -g @anthropic-ai/claude-code",
   "customizations": {
     "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      },
       "extensions": [
         "ms-python.python",
         "ms-python.vscode-pylance",
