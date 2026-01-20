@@ -604,6 +604,37 @@ def compute_day_pnl(
     return total_day_pnl, sorted_day_pnl
 
 
+# zh-TW display labels for Slack report (display-only, no logic change)
+LABELS_ZH = {
+    "daily_report": "每日損益報表",
+    "usd_twd": "USD/TWD",
+    "symbols_counted": "計入標的數",
+    "user_ranking": "用戶損益排名（前3名）",
+    "top5_total": "前5大標的（累計）",
+    "top5_subtotal": "前5大小計",
+    "others_subtotal": "其他小計",
+    "grand_total": "總計",
+    "total_today": "今日損益",
+    "top5_today": "前5大標的（今日）",
+    "day_pnl_sources": "今日損益資料來源",
+    "history": "歷史資料",
+    "fallback": "previousClose備援",
+    "symbols_unit": "檔",
+    "day_pnl_warnings": "今日損益警告",
+    "missing_prev_close": "缺少前日收盤價",
+    "day_pnl_note": "今日損益備註：缺少前日收盤價之標的以0計算（不列入今日變動）",
+    "day_pnl_debug": "今日損益除錯",
+    "missing_prices": "缺少報價（累計）",
+    "none": "無",
+    "lookup_attempts": "報價查詢嘗試（僅缺少者）",
+    "risk_views": "風險視圖",
+    "concentration_risk": "集中度風險（依市值）",
+    "top1_alert": "單一標的集中度風險",
+    "top3_alert": "前三大集中度風險",
+    "currency_exposure": "幣別曝險",
+}
+
+
 def format_slack_message(
     today: str,
     usd_twd: Decimal,
@@ -623,58 +654,59 @@ def format_slack_message(
     currency_exposure: Optional[List[Tuple[str, Decimal, Decimal]]] = None,
 ) -> str:
     """Format the Slack message."""
+    L = LABELS_ZH
     top5 = top_symbols[:5]
     top5_subtotal = sum(pnl for _, pnl in top5)
     others_subtotal = total_pnl - top5_subtotal
 
     lines = [
-        f"*Daily P&L Report - {today}*",
+        f"*{L['daily_report']} - {today}*",
         "",
-        f"USD/TWD: {usd_twd:.2f}",
-        f"Symbols counted: {symbols_count}",
+        f"{L['usd_twd']}：{usd_twd:.2f}",
+        f"{L['symbols_counted']}：{symbols_count}",
         "",
-        "*User P&L Ranking (Top 3):*",
+        f"*{L['user_ranking']}：*",
     ]
 
     sorted_users = sorted(user_pnl.items(), key=lambda x: x[1], reverse=True)
     for i, (user_id, pnl) in enumerate(sorted_users[:3], 1):
-        lines.append(f"  {i}. {user_id}: {pnl:+,.0f} TWD")
+        lines.append(f"  {i}. {user_id}：{pnl:+,.0f} TWD")
 
     lines.append("")
-    lines.append("*Top 5 Symbols (Total):*")
+    lines.append(f"*{L['top5_total']}：*")
 
     for i, (symbol, pnl) in enumerate(top5, 1):
-        lines.append(f"  {i}. {symbol}: {pnl:+,.0f} TWD")
+        lines.append(f"  {i}. {symbol}：{pnl:+,.0f} TWD")
 
     lines.append("")
-    lines.append(f"Top5 subtotal: {top5_subtotal:+,.0f} TWD")
-    lines.append(f"Others subtotal: {others_subtotal:+,.0f} TWD")
-    lines.append(f"Grand total: {total_pnl:+,.0f} TWD")
+    lines.append(f"{L['top5_subtotal']}：{top5_subtotal:+,.0f} TWD")
+    lines.append(f"{L['others_subtotal']}：{others_subtotal:+,.0f} TWD")
+    lines.append(f"{L['grand_total']}：{total_pnl:+,.0f} TWD")
 
     # Day P&L section (Today)
     lines.append("")
-    lines.append(f"*Total P&L (Today): {total_day_pnl:+,.0f} TWD*")
+    lines.append(f"*{L['total_today']}：{total_day_pnl:+,.0f} TWD*")
 
     lines.append("")
-    lines.append("*Top 5 Symbols (Today):*")
+    lines.append(f"*{L['top5_today']}：*")
     top5_day = top_day_symbols[:5]
     for i, (symbol, pnl) in enumerate(top5_day, 1):
-        lines.append(f"  {i}. {symbol}: {pnl:+,.0f} TWD")
+        lines.append(f"  {i}. {symbol}：{pnl:+,.0f} TWD")
 
     # Day P&L data source summary
     lines.append("")
-    lines.append(f"Day P&L data sources: history={day_pnl_history_count} symbols, previousClose fallback={day_pnl_fallback_count} symbols")
+    lines.append(f"{L['day_pnl_sources']}：{L['history']}={day_pnl_history_count}{L['symbols_unit']}，{L['fallback']}={day_pnl_fallback_count}{L['symbols_unit']}")
 
     # Day P&L warnings
     if missing_prev_close:
         lines.append("")
-        lines.append(f"Day P&L warnings: missing previous close for {', '.join(sorted(missing_prev_close))}")
-        lines.append("Day P&L note: missing prev_close symbols are treated as 0 (excluded from today's move).")
+        lines.append(f"{L['day_pnl_warnings']}：{L['missing_prev_close']} {', '.join(sorted(missing_prev_close))}")
+        lines.append(L['day_pnl_note'])
 
         # Day P&L debug section for missing prev_close symbols
         if missing_prev_debug:
             lines.append("")
-            lines.append("Day P&L debug:")
+            lines.append(f"{L['day_pnl_debug']}：")
             for sym in sorted(missing_prev_close):
                 if sym in missing_prev_debug:
                     info = missing_prev_debug[sym]
@@ -688,8 +720,8 @@ def format_slack_message(
                     lines.append(f"- {sym}: yf_ticker={yf_ticker}, rows={rows}, closes={closes}, dates={dates}{fallback_str}")
 
     lines.append("")
-    missing_str = ", ".join(missing_symbols) if missing_symbols else "None"
-    lines.append(f"Missing prices (Total): {missing_str}")
+    missing_str = ", ".join(missing_symbols) if missing_symbols else L['none']
+    lines.append(f"{L['missing_prices']}：{missing_str}")
 
     if lookup_attempts:
         attempts_parts = []
@@ -697,33 +729,33 @@ def format_slack_message(
             attempts = lookup_attempts[sym]
             attempt_str = ", ".join(f"{t}={r}" for t, r in attempts)
             attempts_parts.append(f"{sym}: {attempt_str}")
-        lines.append(f"Price lookup attempts (missing only): {'; '.join(attempts_parts)}")
+        lines.append(f"{L['lookup_attempts']}：{'; '.join(attempts_parts)}")
 
     # Sprint C: Risk Views section (append-only)
     if concentration is not None and currency_exposure is not None:
         lines.append("")
-        lines.append("*Risk Views:*")
+        lines.append(f"*{L['risk_views']}：*")
 
         # Concentration Risk (by market value)
-        lines.append("*Concentration Risk (by market value):*")
+        lines.append(f"*{L['concentration_risk']}：*")
         top5_concentration = concentration[:5]
         for i, (symbol, pct, value_twd) in enumerate(top5_concentration, 1):
-            lines.append(f"  {i}. {symbol}: {pct:.1f}% ({value_twd:,.0f})")
+            lines.append(f"  {i}. {symbol}：{pct:.1f}%（{value_twd:,.0f}）")
 
         # Concentration risk alerts
         if concentration:
             top1_pct = concentration[0][1] if len(concentration) >= 1 else Decimal("0")
             top3_pct = sum(c[1] for c in concentration[:3])
             if top1_pct > Decimal("25"):
-                lines.append("⚠️ Top-1 concentration risk")
+                lines.append(f"⚠️ {L['top1_alert']}")
             if top3_pct > Decimal("60"):
-                lines.append("⚠️ Top-3 concentration risk")
+                lines.append(f"⚠️ {L['top3_alert']}")
 
         # Currency Exposure
         lines.append("")
-        lines.append("*Currency Exposure:*")
+        lines.append(f"*{L['currency_exposure']}：*")
         for ccy, pct, value_twd in currency_exposure:
-            lines.append(f"  - {ccy}: {pct:.1f}% ({value_twd:,.0f})")
+            lines.append(f"  - {ccy}：{pct:.1f}%（{value_twd:,.0f}）")
 
     return "\n".join(lines)
 

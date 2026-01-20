@@ -230,9 +230,9 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        assert "*Risk Views:*" in message
-        assert "*Concentration Risk (by market value):*" in message
-        assert "*Currency Exposure:*" in message
+        assert "*風險視圖：*" in message
+        assert "*集中度風險（依市值）：*" in message
+        assert "*幣別曝險：*" in message
 
     def test_concentration_risk_formatting(self):
         """Test concentration risk formatting with correct percentage and value."""
@@ -247,9 +247,9 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        # Check formatting: pct% with 1 decimal, value_twd with thousands separators
-        assert "1. AAPL: 40.5% (405,000)" in message
-        assert "2. TSLA: 30.3% (303,000)" in message
+        # Check formatting: pct% with 1 decimal, value_twd with thousands separators (zh-TW)
+        assert "1. AAPL：40.5%（405,000）" in message
+        assert "2. TSLA：30.3%（303,000）" in message
 
     def test_currency_exposure_formatting(self):
         """Test currency exposure formatting."""
@@ -264,8 +264,8 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        assert "- USD: 70.8% (708,000)" in message
-        assert "- TWD: 29.2% (292,000)" in message
+        assert "- USD：70.8%（708,000）" in message
+        assert "- TWD：29.2%（292,000）" in message
 
     def test_top1_concentration_risk_alert(self):
         """Test Top-1 concentration risk alert when top1 > 25%."""
@@ -281,7 +281,7 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        assert "Top-1 concentration risk" in message
+        assert "單一標的集中度風險" in message
 
     def test_no_top1_alert_when_under_threshold(self):
         """Test no Top-1 alert when top1 <= 25%."""
@@ -298,7 +298,7 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        assert "Top-1 concentration risk" not in message
+        assert "單一標的集中度風險" not in message
 
     def test_top3_concentration_risk_alert(self):
         """Test Top-3 concentration risk alert when sum(top3) > 60%."""
@@ -315,7 +315,7 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        assert "Top-3 concentration risk" in message
+        assert "前三大集中度風險" in message
 
     def test_no_top3_alert_when_under_threshold(self):
         """Test no Top-3 alert when sum(top3) <= 60%."""
@@ -332,7 +332,7 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        assert "Top-3 concentration risk" not in message
+        assert "前三大集中度風險" not in message
 
     def test_existing_pnl_sections_unchanged(self):
         """Test that existing P&L sections remain unchanged with risk views."""
@@ -346,16 +346,16 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        # Verify existing sections are present
-        assert "*Daily P&L Report - 2026-01-19*" in message
-        assert "USD/TWD: 32.50" in message
-        assert "Symbols counted: 10" in message
-        assert "*User P&L Ranking (Top 3):*" in message
-        assert "*Top 5 Symbols (Total):*" in message
-        assert "Grand total: +100,000 TWD" in message
-        assert "*Total P&L (Today): +5,000 TWD*" in message
-        assert "*Top 5 Symbols (Today):*" in message
-        assert "Missing prices (Total): None" in message
+        # Verify existing sections are present (zh-TW labels)
+        assert "*每日損益報表 - 2026-01-19*" in message
+        assert "USD/TWD：32.50" in message
+        assert "計入標的數：10" in message
+        assert "*用戶損益排名（前3名）：*" in message
+        assert "*前5大標的（累計）：*" in message
+        assert "總計：+100,000 TWD" in message
+        assert "*今日損益：+5,000 TWD*" in message
+        assert "*前5大標的（今日）：*" in message
+        assert "缺少報價（累計）：無" in message
 
     def test_no_risk_views_when_params_none(self):
         """Test that Risk Views section is not added when params are None."""
@@ -364,9 +364,9 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        assert "*Risk Views:*" not in message
-        assert "*Concentration Risk" not in message
-        assert "*Currency Exposure:*" not in message
+        assert "*風險視圖：*" not in message
+        assert "*集中度風險" not in message
+        assert "*幣別曝險：*" not in message
 
     def test_top5_symbols_shown(self):
         """Test that only top 5 symbols are shown in concentration risk."""
@@ -386,14 +386,14 @@ class TestFormatSlackMessageRiskViews:
 
         message = format_slack_message(**params)
 
-        assert "1. A:" in message
-        assert "2. B:" in message
-        assert "3. C:" in message
-        assert "4. D:" in message
-        assert "5. E:" in message
+        assert "1. A：" in message
+        assert "2. B：" in message
+        assert "3. C：" in message
+        assert "4. D：" in message
+        assert "5. E：" in message
         # F and G should not appear in the numbered list
-        assert "6. F:" not in message
-        assert "7. G:" not in message
+        assert "6. F：" not in message
+        assert "7. G：" not in message
 
 
 class TestRiskViewsIntegration:
@@ -422,19 +422,19 @@ class TestRiskViewsIntegration:
             ],
         )
 
-        # Verify section order: existing sections come before risk views
-        pnl_section_pos = message.find("Grand total:")
-        day_pnl_pos = message.find("*Total P&L (Today):")
-        missing_pos = message.find("Missing prices (Total):")
-        risk_views_pos = message.find("*Risk Views:*")
+        # Verify section order: existing sections come before risk views (zh-TW labels)
+        pnl_section_pos = message.find("總計：")
+        day_pnl_pos = message.find("*今日損益：")
+        missing_pos = message.find("缺少報價（累計）：")
+        risk_views_pos = message.find("*風險視圖：*")
 
         assert pnl_section_pos < day_pnl_pos
         assert day_pnl_pos < missing_pos
         assert missing_pos < risk_views_pos
 
         # Risk Views appears at the end (append-only)
-        concentration_pos = message.find("*Concentration Risk")
-        currency_pos = message.find("*Currency Exposure:*")
+        concentration_pos = message.find("*集中度風險")
+        currency_pos = message.find("*幣別曝險：*")
 
         assert risk_views_pos < concentration_pos
         assert concentration_pos < currency_pos

@@ -284,13 +284,13 @@ def test_format_slack_message_includes_missing_prev_close_note():
         missing_prev_close=["NEWIPO", "IPO2"],
     )
 
-    # Verify the warning line exists
-    assert "Day P&L warnings: missing previous close for" in message
+    # Verify the warning line exists (zh-TW labels)
+    assert "今日損益警告：缺少前日收盤價" in message
     assert "IPO2" in message
     assert "NEWIPO" in message
 
-    # Verify the note about lenient mode is included
-    assert "Day P&L note: missing prev_close symbols are treated as 0 (excluded from today's move)." in message
+    # Verify the note about lenient mode is included (zh-TW labels)
+    assert "今日損益備註：缺少前日收盤價之標的以0計算（不列入今日變動）" in message
 
 
 def test_format_slack_message_no_note_when_all_prev_close_present():
