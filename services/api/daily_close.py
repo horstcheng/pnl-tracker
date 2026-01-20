@@ -373,6 +373,12 @@ def fetch_historical_prices(
                 close_series = hist["Close"].dropna()
                 if close_series.empty:
                     continue
+                
+                # Require at least 2 data points to consider the history reliable/sufficient
+                if len(close_series) < 2:
+                    logger.debug(f"Insufficient historical data for {symbol} ({yf_symbol}): {len(close_series)} rows")
+                    continue
+
                 # Use last available close in the range (nearest prior trading day)
                 close_price = Decimal(str(close_series.iloc[-1]))
                 prices[symbol] = close_price

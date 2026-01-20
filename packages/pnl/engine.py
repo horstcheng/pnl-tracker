@@ -49,6 +49,12 @@ def compute_position_weighted_avg_cost(
             realized_pnl += (tx.price - avg_cost) * tx.quantity - tx.fee
             total_cost -= avg_cost * tx.quantity
             quantity -= tx.quantity
+        elif tx.tx_type == TxType.DIVIDEND:
+            # Dividend increases realized PnL. Net amount = (Price * Quantity) - Fee.
+            realized_pnl += tx.price * tx.quantity - tx.fee
+        elif tx.tx_type == TxType.FEE:
+            # Fee decreases realized PnL. Total cost = (Price * Quantity) + Fee.
+            realized_pnl -= tx.price * tx.quantity + tx.fee
 
     if quantity == Decimal("0"):
         avg_cost = Decimal("0")
