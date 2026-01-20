@@ -356,7 +356,7 @@ class TestFormatSlackMessageRiskTrend:
 
         message = format_slack_message(**params)
 
-        assert "*風險趨勢（7日｜Top-N）：*" in message
+        assert "*風險趨勢（7日｜Top-10）：*" in message
         assert "Top-1 集中度" in message
         assert "Top-3 集中度" in message
         assert "40.5% → 45.2%" in message
@@ -387,7 +387,7 @@ class TestFormatSlackMessageRiskTrend:
 
         message = format_slack_message(**params)
 
-        assert "*風險趨勢（7日｜Top-N）：*" in message
+        assert "*風險趨勢（7日｜Top-10）：*" in message
         assert "無法取得足夠的歷史價格，略過。" in message
 
     def test_risk_trend_appended_after_risk_views(self):
@@ -406,7 +406,7 @@ class TestFormatSlackMessageRiskTrend:
 
         risk_views_pos = message.find("*風險視圖：*")
         currency_pos = message.find("*幣別曝險：*")
-        trend_pos = message.find("*風險趨勢（7日｜Top-N）：*")
+        trend_pos = message.find("*風險趨勢（7日｜Top-10）：*")
 
         assert risk_views_pos < currency_pos < trend_pos
 
@@ -703,7 +703,7 @@ class TestFormatSlackMessageCurrencyExposureTrend:
 
         message = format_slack_message(**params)
 
-        concentration_trend_pos = message.find("*風險趨勢（7日｜Top-N）：*")
+        concentration_trend_pos = message.find("*風險趨勢（7日｜Top-10）：*")
         currency_trend_pos = message.find("*幣別曝險趨勢（7日）：*")
 
         assert concentration_trend_pos < currency_trend_pos
