@@ -1,3 +1,5 @@
 {
-    "remote.autoForwardPortsFallback": 0
+    "remote.autoForwardPortsFallback": 0,
+    "google.cloud.projectId": ""
+
 }

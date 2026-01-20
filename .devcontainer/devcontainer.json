@@ -6,7 +6,7 @@
       "version": "lts"
     }
   },
-  "postCreateCommand": "pip install --upgrade pip && npm install -g @anthropic-ai/claude-code",
+  "postCreateCommand": "pip install --upgrade pip && pip install aider-chat && npm install -g @anthropic-ai/claude-code",
   "customizations": {
     "vscode": {
       "settings": {
